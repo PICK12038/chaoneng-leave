@@ -385,17 +385,25 @@ function renderWeekShell() {
   const pct = total ? Math.round((sent / total) * 100) : 0;
   const pctChecked = total ? Math.round(((paper + left) / total) * 100) : 0;
 
+  const isThisWeek = w.saturday === thisSaturdayIso();
+  const wkNo = termWeekNo(w.saturday);
+  const sun = new Date(w.saturday + 'T12:00:00');
+  sun.setDate(sun.getDate() + 1);
+  const range = `${md(w.saturday)} – ${md(isoOfDate(sun))}`;
   return `
   <section class="hero">
     <div class="hero-main">
       <div class="hero-kicker">Weekend Leave · 周末请假</div>
-      <div class="hero-date">${md(w.saturday)}<span class="hero-weekday">${wd(w.saturday)}</span></div>
-      <div class="hero-meta">截止 ${md(w.saturday)} ${w.cutoff || '21:30'} · 覆盖 ${groups} 个班组 · ${onLeave} 人请假 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校</div>
-      <div class="hero-actions">
-        <button class="btn sm" data-action="prevWeek">← 上一周</button>
-        <button class="btn sm" data-action="thisWeek">本周</button>
-        <button class="btn sm" data-action="nextWeek">下一周 →</button>
+      <div class="hero-weekbar">
+        <button class="wkb-nav" data-action="prevWeek" title="上一周" aria-label="上一周"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
+        <div class="wkb-mid">
+          <div class="wkb-title">第 ${wkNo} 周${isThisWeek ? '<span class="wkb-now">本周</span>' : ''}</div>
+          <div class="wkb-range">${range}</div>
+        </div>
+        <button class="wkb-nav" data-action="nextWeek" title="下一周" aria-label="下一周"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
+        ${isThisWeek ? '' : `<button class="btn sm wkb-back" data-action="thisWeek">回到本周</button>`}
       </div>
+      <div class="hero-meta">截止 ${md(w.saturday)} ${w.cutoff || '21:30'} · 覆盖 ${groups} 个班组 · ${onLeave} 人请假 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校</div>
     </div>
     <div class="hero-stats">
       <div class="hs"><b>${total}</b><span>请假总数</span></div>
@@ -692,6 +700,28 @@ function pickWeek(weeks) {
     }
   }
   return best.id;
+}
+
+/** 学期周号：以 7 月第一个周六为第 1 周（与周表 7.11 对齐） */
+function termWeekNo(satIso) {
+  const d = new Date(satIso + 'T12:00:00');
+  if (Number.isNaN(d.getTime())) return 0;
+  const y = d.getFullYear();
+  const first = new Date(y, 6, 1); // 7 月 1 日
+  first.setDate(first.getDate() + ((6 - first.getDay() + 7) % 7));
+  let no = Math.round((d.getTime() - first.getTime()) / 604800000) + 1;
+  if (no <= 0) {
+    // 1–6 月归上一学年（前一年 7 月起）
+    const first2 = new Date(y - 1, 6, 1);
+    first2.setDate(first2.getDate() + ((6 - first2.getDay() + 7) % 7));
+    no = Math.round((d.getTime() - first2.getTime()) / 604800000) + 1;
+  }
+  return no;
+}
+
+/** 本周（今天所属周末）的周六 ISO */
+function thisSaturdayIso() {
+  return weekendOfRecord(isoOfDate(new Date()));
 }
 
 /** 一条请假时间属于哪个周末（周六）；周中的请假归到后面的周六 */
@@ -1783,11 +1813,7 @@ async function gotoWeek(iso) {
 }
 
 async function gotoThisWeek() {
-  const d = new Date();
-  const delta = (6 - d.getDay() + 7) % 7;
-  d.setDate(d.getDate() + delta);
-  const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  await gotoWeek(iso);
+  await gotoWeek(thisSaturdayIso());
 }
 
 /** 把当前识别结果换到它所属的那一周（必要时新建周次） */
