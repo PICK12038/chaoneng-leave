@@ -1688,6 +1688,7 @@ async function saveRecord() {
     note: $('#fdNote').value.trim(),
     phone: ($('#fdPhone') ? $('#fdPhone').value : '').trim(),
     contact: ($('#fdContact') ? $('#fdContact').value : '').trim(),
+    category: categoryOf($('#fdStart').value || null, weekCtx()),
     slip: {
       written: $('[data-toggle-slip="written"]').classList.contains('on'),
       sent: $('[data-toggle-slip="sent"]').classList.contains('on'),
@@ -1834,7 +1835,9 @@ async function switchWeek(sat) {
   toast(`已切到 ${md(sat)} 那一周`, 'ok');
 }
 
-async function doImport() {  const recs = state.preview
+async function doImport() {
+  const ctx = weekCtx();
+  const recs = state.preview
     .filter((p) => p.include && p.name && p.startAt)
     .map((p) => ({
       name: p.name,
@@ -1847,6 +1850,8 @@ async function doImport() {  const recs = state.preview
       reason: p.reason,
       phone: p.phone || '',
       contact: p.contact || '',
+      // 分类永远按「开始时间」重算，避免沿用预览时的旧周次
+      category: categoryOf(p.startAt, ctx),
     }));
   if (!recs.length) {
     toast('没有可导入的行', 'err');
