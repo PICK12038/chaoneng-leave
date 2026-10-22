@@ -32,6 +32,8 @@
         { name: '鄢艺菲', dorm: 'A616', group: '超能一3组', className: '超能1班', phone: '13336843280' },
         { name: '刘柏萍', dorm: 'A231', group: '超能一1组', className: '超能1班', phone: '' },
         { name: '关伊萌', dorm: 'B312', group: '丰泰班2组', className: '丰泰班', phone: '' },
+        { name: '苏甜', dorm: 'A217', group: '超能二4组', className: '超能2班', phone: '' },
+        { name: '陈雯睿', dorm: 'A533', group: '超能一1组', className: '超能1班', phone: '' },
       ],
       weeks: [{ id: '2026-10-24', saturday: '2026-10-24', cutoff: '21:30', note: '', records: [] }],
     };
