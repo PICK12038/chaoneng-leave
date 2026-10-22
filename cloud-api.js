@@ -218,6 +218,22 @@
     updatedAt: shortTime(r.updated_at),
   });
 
+  /* 分类以「开始时间」为准：周六 21:30 前=提前请假，周六当天=周六，次日(周日)=周日 */
+  const catOfWeek = (startAt, weekId, cutoff) => {
+    if (!startAt) return 'sat';
+    const s = String(startAt).replace(' ', 'T').slice(0, 16);
+    const sat = String(weekId || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(sat)) return 'sat';
+    const cut = `${sat}T${cutoff || '21:30'}`;
+    if (s < cut) return 'early';
+    const d = new Date(`${sat}T12:00:00`);
+    d.setDate(d.getDate() + 1);
+    const sunday = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (s >= `${sunday}T00:00` && s <= `${sunday}T23:59`) return 'sun';
+    if (s < `${sunday}T00:00`) return 'sat';
+    return 'other';
+  };
+
   const toRecordRow = (r, weekId) => {
     const row = {
       week_id: weekId,
@@ -230,7 +246,7 @@
       note: r.note || '',
       phone: r.phone || '',
       contact: r.contact || '',
-      cat: r.category || 'sat',
+      cat: r.category || catOfWeek(r.startAt, weekId, r.cutoff),
       check_state: r.check || '',
       by_name: r.by || '',
       updated_at: new Date().toISOString(),
