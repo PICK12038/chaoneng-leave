@@ -535,6 +535,11 @@ export function parseOne(rawLine, ctx) {
       reason = reason ? `${reason} ${t}` : t;
     }
   }
+  reason = reason
+    .replace(/^(?:因为|因|由于|所以|需要|申请)+/g, '')
+    .replace(/\s*(?:时间|时至|点钟|至|点|分|半|左右)\s*/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
   if (reason.length > 40) reason = reason.slice(0, 40);
 
   if (time.start && ctx.week && ctx.week.saturday) {
