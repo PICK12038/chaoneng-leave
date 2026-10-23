@@ -664,8 +664,10 @@ function renderPreview() {
     const dup = existing.has(`${p.name}|${p.startAt || ''}`);
     const known = rosterNames.has(p.name);
     const far = (p.warnings || []).some((w) => w.includes('不在本周'));
+    const unsure = (p.warnings || []).some((w) => w.includes('推断'));
     const tag =
       (far ? '<span class="preview-tag pt-far">不在本周</span>' : '') +
+      (unsure ? '<span class="preview-tag pt-warn">时间待确认</span>' : '') +
       (dup
         ? '<span class="preview-tag pt-dup">重复</span>'
         : !known
