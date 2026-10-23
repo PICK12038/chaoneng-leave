@@ -75,6 +75,16 @@ export function normalizeLine(input) {
   s = s.replace(/[—–－]+/g, '-');
   s = s.replace(/[~～]/g, '~');
   s = s.replace(/\s*至\s*/g, '至');
+  // 中文数字日期：十月二十五日 → 10月25日、二十五号 → 25日
+  s = s.replace(/([一二三四五六七八九十]{1,3})\s*月\s*([一二三四五六七八九十]{1,3})\s*[日号]/g, (m, a, b) => {
+    const mo = cnToInt(a);
+    const d = cnToInt(b);
+    return mo >= 1 && mo <= 12 && d >= 1 && d <= 31 ? `${mo}月${d}日` : m;
+  });
+  s = s.replace(/([一二三四五六七八九十]{1,3})\s*[号日]/g, (m, a) => {
+    const d = cnToInt(a);
+    return d >= 1 && d <= 31 && !/[〇零]/.test(a) ? `${d}日` : m;
+  });
   // 10/24、10／24 这类斜杠日期统一成点号，交给 RE_DOT 处理
   s = s.replace(/(\d{1,2})\s*[\/／]\s*(\d{1,2})(?!\d)/g, '$1.$2');
   s = s.replace(/ {2,}/g, ' ');
@@ -685,6 +695,29 @@ function splitBlocks(text) {
 }
 
 /* 一个块 = 一条家长文案 */
+/* 家长常写「周六晚上九点半走，周日晚上八点前回来」——
+   在没有明确月/日时，把「周X / 星期X」换成所选周里的具体日期，交给原时间解析处理。 */
+function withWeekdayDates(text, week) {
+  const sat = week && parseWeekDate(week.saturday);
+  if (!sat) return text;
+  if (/(?:\d{1,2}\s*月)|(?:\d{1,2}\s*[日号])/.test(text)) return text; // 已写具体日期，不猜
+  const dayOf = (offset) => {
+    const t = new Date(Date.UTC(sat.y, sat.m - 1, sat.d) + offset * DAY);
+    return `${t.getUTCMonth() + 1}月${t.getUTCDate()}日`;
+  };
+  const map = { 六: 0, 日: 1, 天: 1 };
+  return String(text).replace(/(下周|下个星期|本周|这周|这个星期|星期|周)([六日天一二三四五])/g, (all, pre, ch) => {
+    let off = map[ch];
+    if (off == null) {
+      // 周一~周五：按本周位置算，超出周六就往后顺延
+      const idx = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5 }[ch];
+      off = idx == null ? 0 : idx - 6; // 周一 = 周六 -5 天
+    }
+    if (/^下/.test(pre)) off += 7;
+    return dayOf(off);
+  });
+}
+
 function parseBlock(block, ctx) {
   const hints = extractHints(block);
   const records = [];
@@ -693,11 +726,14 @@ function parseBlock(block, ctx) {
   if (hints.student) {
     // 「请假学生：X」在场 → 整块当成一位学生的描述（时间句常常单独占一行）
     // 用 masked 版本：自我介绍、家长姓名、电话、标签都已抹掉，避免污染「原因」
-    const joined = String(hints.masked || block)
-      .split(/\n+/)
-      .map((x) => x.trim())
-      .filter(Boolean)
-      .join('，');
+    const joined = withWeekdayDates(
+      String(hints.masked || block)
+        .split(/\n+/)
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .join('，'),
+      ctx.week
+    );
     const rec = parseOne(joined, ctx);
     if (!rec || !rec.startAt) {
       skipped.push(block.trim().slice(0, 80));
@@ -713,6 +749,20 @@ function parseBlock(block, ctx) {
     }
     if (hints.phone && !rec.phone) rec.phone = hints.phone;
     if (hints.parent && !rec.contact) rec.contact = hints.parent;
+
+    // 「周六9点半走，周日8点回来」这类中间夹了动词的写法：取前两个时间点当起止
+    if (rec.startAt && !rec.endAt) {
+      const atoms = scanAtoms(joined);
+      const ref = parseWeekDate(ctx.week && ctx.week.saturday);
+      if (atoms.length >= 2 && ref) {
+        const alt = parseTimeRange(`${atoms[0].raw}至${atoms[1].raw}`, ref);
+        if (alt.start && alt.end) {
+          rec.endAt = alt.end;
+          rec.confidence = { ...rec.confidence, time: 'ok' };
+          rec.warnings.push('结束时间由后一句时间推断，请确认');
+        }
+      }
+    }
     records.push(rec);
     return { records, skipped };
   }
