@@ -187,6 +187,40 @@
     return data;
   }
 
+  async function pgCount(path) {
+    const res = await fetch(REST + '/' + path, {
+      method: 'HEAD',
+      headers: { apikey: KEY, Authorization: 'Bearer ' + KEY, Prefer: 'count=exact' },
+    });
+    const range = res.headers.get('content-range') || '';
+    const n = Number((range.split('/')[1] || '0').trim());
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  let fpCache = { at: 0, value: '' };
+
+  async function fingerprint() {
+    const [recCount, recMax, stuCount, weekCount] = await Promise.all([
+      pgCount('records?select=id'),
+      pg('records?select=updated_at&order=updated_at.desc&limit=1'),
+      pgCount('students?select=name'),
+      pgCount('weeks?select=id'),
+    ]);
+    return [recCount, (recMax && recMax[0] && recMax[0].updated_at) || '', stuCount, weekCount].join('|');
+  }
+
+  // 3 秒内复用，避免同一次操作里重复查询
+  async function revision() {
+    if (Date.now() - fpCache.at < 3000) return fpCache.value;
+    try {
+      const value = await fingerprint();
+      fpCache = { at: Date.now(), value };
+      return value;
+    } catch {
+      return fpCache.value || '0';
+    }
+  }
+
   /* ---------------- 字段映射 ---------------- */
   const shortTime = (v) => (v ? String(v).replace(' ', 'T').slice(0, 16) : '');
   const fullTime = (v) => (v ? String(v).replace(' ', 'T').slice(0, 19) : '');
@@ -307,7 +341,7 @@
       students: (students || []).map(toStudent),
       weeks,
       log: (log || []).map((l) => ({ t: shortTime(l.at).replace('T', ' '), by: l.by_name, action: l.action, detail: l.detail })),
-      revision: 0,
+      revision: await revision(),
       server: { port: location.host, ips: [], code: false, share: { running: false, provider: 'supabase' } },
       me: null,
     };
@@ -325,7 +359,7 @@
     }
     const w = wRows[0];
     return {
-      revision: 0,
+      revision: await revision(),
       week: {
         id: w.id,
         saturday: String(w.saturday),
@@ -338,7 +372,7 @@
 
   async function addRecords({ week, records }) {
     const rows = (records || []).map((r) => toRecordRow(r, week));
-    if (!rows.length) return { added: 0, duplicates: [], week: (await weekData(week)).week, revision: 0 };
+    if (!rows.length) return { added: 0, duplicates: [], week: (await weekData(week)).week, revision: await revision() };
 
     const exist = await pg(`records?select=name,start_at&week_id=eq.${enc(week)}`);
     const seen = new Set((exist || []).map((r) => `${r.name}|${shortTime(r.start_at)}`));
@@ -354,7 +388,7 @@
       fresh.push(row);
     }
     if (fresh.length) await pg('records', { method: 'POST', body: fresh, prefer: 'return=minimal' });
-    return { added: fresh.length, duplicates, week: (await weekData(week)).week, revision: 0 };
+    return { added: fresh.length, duplicates, week: (await weekData(week)).week, revision: await revision() };
   }
 
   async function patchRecord(weekId, id, body) {
@@ -381,11 +415,11 @@
       row.sent = !!body.slip.sent;
     }
     await pg(`records?id=eq.${enc(id)}`, { method: 'PATCH', body: row, prefer: 'return=minimal' });
-    return { ok: true, week: (await weekData(weekId)).week, revision: 0 };
+    return { ok: true, week: (await weekData(weekId)).week, revision: await revision() };
   }
 
   async function bulkRecords({ week, ids, field, value }) {
-    if (!ids || !ids.length) return { ok: true, week: (await weekData(week)).week, revision: 0 };
+    if (!ids || !ids.length) return { ok: true, week: (await weekData(week)).week, revision: await revision() };
     const filter = `id=in.(${ids.map(enc).join(',')})`;
     if (field === 'delete') {
       await pg(`records?${filter}`, { method: 'DELETE', prefer: 'return=minimal' });
@@ -394,7 +428,7 @@
     } else if (field === 'written' || field === 'sent') {
       await pg(`records?${filter}`, { method: 'PATCH', body: { [field]: !!value, updated_at: new Date().toISOString() }, prefer: 'return=minimal' });
     }
-    return { ok: true, week: (await weekData(week)).week, revision: 0 };
+    return { ok: true, week: (await weekData(week)).week, revision: await revision() };
   }
 
   async function studentsBulk({ students, create }) {
@@ -420,7 +454,7 @@
       }
     }
     const all = await pg('students?select=*&order=name.asc');
-    return { ok: true, added, updated, students: (all || []).map(toStudent), revision: 0 };
+    return { ok: true, added, updated, students: (all || []).map(toStudent), revision: await revision() };
   }
 
   /* ---------------- 路由分发 ---------------- */
@@ -435,11 +469,15 @@
     if (p === '/api/login') return { ok: true };
     if (p === '/api/presence') return { online: [] };
     if (p === '/api/share') return { running: false, provider: 'supabase', installed: true };
-    if (p === '/api/sync') return { changed: false, revision: 0 };
+    if (p === '/api/sync') {
+      const rev = await revision();
+      const changed = qs.get('rev') !== rev;
+      return { changed, revision: rev, weeks: changed ? await weekMeta() : undefined };
+    }
     if (p === '/api/log') return { log: (await bootstrap()).log };
     if (p === '/api/settings' && method === 'PUT') {
       await pg('settings?id=eq.1', { method: 'PATCH', body: { org: body.org, cutoff: body.cutoff, updated_at: new Date().toISOString() }, prefer: 'return=minimal' });
-      return { ok: true, settings: body, revision: 0 };
+      return { ok: true, settings: body, revision: await revision() };
     }
     if (p.startsWith('/api/week/')) return weekData(decodeURIComponent(p.slice('/api/week/'.length)));
     if (p === '/api/records' && method === 'POST') return addRecords(body);
@@ -451,7 +489,7 @@
       if (method === 'PATCH') return patchRecord(weekId, id, body || {});
       if (method === 'DELETE') {
         await pg(`records?id=eq.${enc(id)}`, { method: 'DELETE', prefer: 'return=minimal' });
-        return { ok: true, week: (await weekData(weekId)).week, revision: 0 };
+        return { ok: true, week: (await weekData(weekId)).week, revision: await revision() };
       }
     }
     if (p === '/api/students' && method === 'POST') return studentsBulk({ students: [body], create: true });
@@ -459,7 +497,7 @@
     if (p.startsWith('/api/students/') && method === 'DELETE') {
       await pg(`students?name=eq.${enc(decodeURIComponent(p.slice('/api/students/'.length)))}`, { method: 'DELETE', prefer: 'return=minimal' });
       const all = await pg('students?select=*&order=name.asc');
-      return { ok: true, students: (all || []).map(toStudent), revision: 0 };
+      return { ok: true, students: (all || []).map(toStudent), revision: await revision() };
     }
     if (p === '/api/weeks' && method === 'POST') {
       const sat = body.saturday || '';
@@ -468,11 +506,11 @@
         await pg('weeks', { method: 'POST', body: [{ id: sat, saturday: sat, cutoff: '21:30', note: '' }], prefer: 'return=minimal' });
       }
       const list = await weekMeta();
-      return { ok: true, week: list.find((w) => w.id === sat) || null, weeks: list, revision: 0 };
+      return { ok: true, week: list.find((w) => w.id === sat) || null, weeks: list, revision: await revision() };
     }
     if (p.startsWith('/api/weeks/') && method === 'DELETE') {
       await pg(`weeks?id=eq.${enc(decodeURIComponent(p.slice('/api/weeks/'.length)))}`, { method: 'DELETE', prefer: 'return=minimal' });
-      return { ok: true, weeks: await weekMeta(), revision: 0 };
+      return { ok: true, weeks: await weekMeta(), revision: await revision() };
     }
     if (qs.get('__') === null) {
       // 未覆盖的接口一律给个空对象，避免前端崩
