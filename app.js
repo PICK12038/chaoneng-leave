@@ -10,6 +10,7 @@ import {
   CATEGORY_LABEL,
   normalizeDorm,
   normalizeGroup,
+  levenshtein,
 } from './parser.js';
 
 /* ================================================================== */
@@ -620,6 +621,31 @@ function renderPaste() {
   return wrap.firstElementChild;
 }
 
+/* 姓名下拉：把「最像的 5 个」单独置顶，243 人里翻找太费劲 */
+function nameOptions(p, known) {
+  const probe = String(p.name || p.rawName || '').replace(/\s/g, '');
+  const picked = [];
+  if (probe && !known) {
+    const scored = state.students
+      .map((s) => ({ name: s.name, d: levenshtein(s.name, probe) }))
+      .filter((x) => x.d <= 2)
+      .sort((a, b) => a.d - b.d || a.name.length - b.name.length)
+      .slice(0, 5);
+    picked.push(...scored.map((x) => x.name));
+  }
+  const sel = (name) => (name === p.name ? 'selected' : '');
+  const head = picked.length
+    ? `<optgroup label="可能是">${picked
+        .map((n) => `<option value="${esc(n)}" ${sel(n)}>${esc(n)}</option>`)
+        .join('')}</optgroup>`
+    : '';
+  const all = state.students
+    .filter((s) => !picked.includes(s.name))
+    .map((s) => `<option value="${esc(s.name)}" ${sel(s.name)}>${esc(s.name)}</option>`)
+    .join('');
+  return `${head}<optgroup label="全部 ${state.students.length} 人">${all}</optgroup>`;
+}
+
 function renderPreview() {
   const host = $('#previewHost');
   if (!host) return;
@@ -647,9 +673,7 @@ function renderPreview() {
         : p.confidence && p.confidence.name === 'fuzzy'
         ? '<span class="preview-tag pt-fuzzy">纠错</span>'
         : '<span class="preview-tag pt-new">新增</span>');
-    const options = state.students
-      .map((s) => `<option value="${esc(s.name)}" ${s.name === p.name ? 'selected' : ''}>${esc(s.name)}</option>`)
-      .join('');
+    const options = nameOptions(p, known);
     return `<tr data-idx="${i}">
       <td class="col-check"><input type="checkbox" data-pcheck="${i}" ${p.include ? 'checked' : ''}></td>
       <td>
