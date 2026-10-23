@@ -75,6 +75,8 @@ export function normalizeLine(input) {
   s = s.replace(/[—–－]+/g, '-');
   s = s.replace(/[~～]/g, '~');
   s = s.replace(/\s*至\s*/g, '至');
+  // 10/24、10／24 这类斜杠日期统一成点号，交给 RE_DOT 处理
+  s = s.replace(/(\d{1,2})\s*[\/／]\s*(\d{1,2})(?!\d)/g, '$1.$2');
   s = s.replace(/ {2,}/g, ' ');
   return s.trim();
 }
@@ -637,23 +639,95 @@ function splitNumbered(line) {
   return parts.map((p) => p.replace(/^\s*\d{1,3}\s*[.、．)）]\s*/, '').trim()).filter(Boolean);
 }
 
-export function parseText(text, ctx) {
-  const hints = extractHints(text);
-  const lines = String(hints.masked || '')
+/* 每条文案一般以「教务老师 / 您好」开场，也可能是空行分段的几条消息 */
+const GREETING_RE = /^(?:教务老师|班主任|老师您好|老师好|尊敬的老师|各位老师|老师们|您好)/;
+
+function splitBlocks(text) {
+  const src = String(text || '').replace(/\r/g, '');
+  const raw = [];
+  let cur = [];
+  const flush = () => {
+    const t = cur.join('\n').trim();
+    if (t) raw.push(t);
+    cur = [];
+  };
+  for (const line of src.split('\n')) {
+    const t = line.trim();
+    if (!t) {
+      flush();
+      continue;
+    }
+    if (GREETING_RE.test(t) && cur.join('').trim()) flush();
+    cur.push(line);
+  }
+  flush();
+
+  // 一个块里挤了多条「请假学生：」→ 以标签为界再切，保留标签前约 120 字（时间通常写在那儿）
+  const out = [];
+  for (const b of raw) {
+    const re = new RegExp(LABEL_STUDENT.source, 'g');
+    const idxs = [];
+    let m;
+    while ((m = re.exec(b))) idxs.push(m.index);
+    if (idxs.length <= 1) {
+      out.push(b);
+      continue;
+    }
+    let start = 0;
+    for (let k = 1; k < idxs.length; k++) {
+      const cut = Math.max(start + 1, idxs[k] - 120);
+      out.push(b.slice(start, cut).trim());
+      start = cut;
+    }
+    out.push(b.slice(start).trim());
+  }
+  return out.filter(Boolean);
+}
+
+/* 一个块 = 一条家长文案 */
+function parseBlock(block, ctx) {
+  const hints = extractHints(block);
+  const records = [];
+  const skipped = [];
+
+  if (hints.student) {
+    // 「请假学生：X」在场 → 整块当成一位学生的描述（时间句常常单独占一行）
+    // 用 masked 版本：自我介绍、家长姓名、电话、标签都已抹掉，避免污染「原因」
+    const joined = String(hints.masked || block)
+      .split(/\n+/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .join('，');
+    const rec = parseOne(joined, ctx);
+    if (!rec || !rec.startAt) {
+      skipped.push(block.trim().slice(0, 80));
+      return { records, skipped };
+    }
+    const rn = resolveHintName(hints.student, ctx);
+    rec.name = rn.name;
+    rec.rawName = rn.rawName || rn.name;
+    rec.confidence = { ...rec.confidence, name: rn.confidence };
+    if (rn.student) {
+      rec.dorm = rec.dorm || rn.student.dorm || '';
+      rec.group = rec.group || rn.student.group || '';
+    }
+    if (hints.phone && !rec.phone) rec.phone = hints.phone;
+    if (hints.parent && !rec.contact) rec.contact = hints.parent;
+    records.push(rec);
+    return { records, skipped };
+  }
+
+  // 没有标签 → 退回逐行解析（老师手写的「姓名 宿舍 时间」清单）
+  const segments = [];
+  for (const line of String(hints.masked || '')
     .replace(/\r/g, '')
     .split(/\n+/)
     .map((l) => l.trim())
-    .filter(Boolean);
-
-  const segments = [];
-  for (const line of lines) {
+    .filter(Boolean)) {
     if (HEADER_WORDS.test(line)) continue;
     if (line.replace(/\s/g, '').length < 2) continue;
     segments.push(...splitNumbered(line));
   }
-
-  const records = [];
-  const skipped = [];
   for (const seg of segments) {
     let parts = [seg];
     if (countNames(seg, ctx) >= 2) {
@@ -671,7 +745,7 @@ export function parseText(text, ctx) {
       records.push(rec);
     }
   }
-  // 「请假学生：某某」这类只有姓名的重复行并入有时间的那条，避免同一个人出现两次
+  // 只有姓名的重复行并入同名且有时间的那条
   const withTime = new Set(records.filter((r) => r.startAt).map((r) => r.name));
   const merged = [];
   for (const r of records) {
@@ -685,50 +759,54 @@ export function parseText(text, ctx) {
     }
     merged.push(r);
   }
+  return { records: merged, skipped };
+}
 
-  // 「请假学生：某某」是这段文案里唯一可信的姓名来源：
-  // 家长的自我介绍（我是某某学生的家长）、家长姓名都不能当成请假学生
-  let hintApplied = false;
-  if (hints.student) {
-    const rn = resolveHintName(hints.student, ctx);
-    const timed = merged.filter((r) => r.startAt);
-    const pool = timed.length ? timed : merged;
-    const out = [];
-    const seen = new Set();
-    for (const r of pool) {
-      const key = r.startAt || r.raw;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      r.name = rn.name;
-      r.rawName = rn.rawName || rn.name;
-      r.confidence = { ...r.confidence, name: rn.confidence };
-      if (rn.student) {
-        if (!r.dorm) r.dorm = rn.student.dorm || '';
-        if (!r.group) r.group = rn.student.group || '';
-      }
-      if (hints.phone && !r.phone) r.phone = hints.phone;
-      if (hints.parent && !r.contact) r.contact = hints.parent;
+/* 同一个人 + 同一个开始时间 → 合并成一条（重复粘贴多条文案时最常见） */
+function mergeDuplicates(records) {
+  const out = [];
+  const map = new Map();
+  for (const r of records) {
+    if (!r.warnings) r.warnings = [];
+    const key = `${r.name}|${r.startAt || ''}`;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, r);
       out.push(r);
+      continue;
     }
-    merged.length = 0;
-    merged.push(...out);
-    hintApplied = true;
+    if (r.reason && (!prev.reason || r.reason.length > prev.reason.length)) prev.reason = r.reason;
+    if (!prev.dorm && r.dorm) prev.dorm = r.dorm;
+    if (!prev.group && r.group) prev.group = r.group;
+    if (!prev.phone && r.phone) prev.phone = r.phone;
+    if (!prev.contact && r.contact) prev.contact = r.contact;
+    for (const w of r.warnings) if (!prev.warnings.includes(w)) prev.warnings.push(w);
+    if (!prev.warnings.includes('同一人多条消息，已合并')) prev.warnings.push('同一人多条消息，已合并');
   }
+  return out;
+}
 
-  // 整段只有一个学生时，把散落在其他行里的家长电话/姓名补进去
-  if (merged.length === 1) {
-    const one = merged[0];
-    if (!one.phone) {
-      const pm = String(text).match(/(?<!\d)(1[3-9]\d{9})(?!\d)/);
-      if (pm) one.phone = pm[1];
-    }
+export function parseText(text, ctx) {
+  const blocks = splitBlocks(text);
+  const records = [];
+  const skipped = [];
+  for (const block of blocks) {
+    const r = parseBlock(block, ctx);
+    records.push(...r.records);
+    skipped.push(...r.skipped);
+  }
+  const list = mergeDuplicates(records);
+  // 整段只有一个学生时，把散落在别处的电话/家长补上
+  if (list.length === 1) {
+    const one = list[0];
+    const pm = String(text).match(/(?<!\d)(1[3-9]\d{9})(?!\d)/);
+    if (!one.phone && pm) one.phone = pm[1];
     if (!one.contact) {
       const cm = String(text).match(/(?:学生家长|家长姓名|家长)[:：]?\s*([\u4e00-\u9fa5]{2,4})/);
       if (cm) one.contact = cm[1];
     }
   }
-
-  return { records: merged, skipped };
+  return { records: list, skipped };
 }
 
 function countNames(seg, ctx) {
