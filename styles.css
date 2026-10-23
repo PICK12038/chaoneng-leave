@@ -437,6 +437,13 @@ textarea.paste-area { min-height: 210px; font-size: 13.5px; line-height: 1.85; }
 }
 .toast.ok { background: #064e3b; }
 .toast.err { background: #7f1d1d; }
+.toast.has-act { pointer-events: auto; padding-right: 8px; }
+.toast-act {
+  border: 0; font: inherit; font-size: 12.5px; cursor: pointer;
+  background: rgba(255, 255, 255, .2); color: #fff;
+  padding: 4px 11px; border-radius: 99px;
+}
+.toast-act:hover { background: rgba(255, 255, 255, .34); }
 
 /* ============ 登录 / 称呼 ============ */
 .login-wrap { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(90% 120% at 70% 0%, #2b2568, #12131f 60%); z-index: 300; }
