@@ -116,13 +116,25 @@ async function api(path, opts = {}) {
 
 const send = (path, method, body) => api(path, { method, body: body ? JSON.stringify(body) : undefined });
 
-function toast(msg, kind) {
+function toast(msg, kind, action) {
   const root = $('#toastRoot');
   const el = document.createElement('div');
-  el.className = `toast ${kind || ''}`;
-  el.textContent = msg;
+  el.className = `toast ${kind || ''}${action ? ' has-act' : ''}`;
+  const text = document.createElement('span');
+  text.textContent = msg;
+  el.appendChild(text);
+  if (action && action.label) {
+    const b = document.createElement('button');
+    b.className = 'toast-act';
+    b.textContent = action.label;
+    b.onclick = () => {
+      el.remove();
+      action.fn();
+    };
+    el.appendChild(b);
+  }
   root.appendChild(el);
-  setTimeout(() => el.remove(), 2400);
+  setTimeout(() => el.remove(), action ? 7000 : 2400);
 }
 
 /* ================================================================== */
@@ -169,7 +181,7 @@ async function loadWeek(id) {
 function startTimers() {
   if (state.timers) return;
   state.timers = true;
-  setInterval(pollSync, 4000);
+  setInterval(pollSync, window.CLOUD_MODE ? 8000 : 4000);
   setInterval(pingPresence, 18000);
   pingPresence();
 }
@@ -200,6 +212,10 @@ async function pollSync() {
 }
 
 async function pingPresence() {
+  if (window.CLOUD_MODE) {
+    setSync('ok', '已连接云端');
+    return;
+  }
   try {
     const data = await api('/api/presence', {
       method: 'POST',
@@ -262,6 +278,11 @@ function renderShell() {
 
 function renderPresence() {
   const box = $('#presence');
+  if (!box) return;
+  if (window.CLOUD_MODE) {
+    box.innerHTML = '';
+    return;
+  }
   const list = state.online.filter((x) => x.id !== state.clientId);
   if (!list.length) {
     box.innerHTML = '';
@@ -437,6 +458,7 @@ function renderWeekShell() {
       ${chip('other', '其他', counts.other)}
     </div>
     <span class="spacer"></span>
+    <button class="btn sm" data-action="copySummary" title="按周末整理成一段文字，方便发群或打印">复制汇总</button>
     <div class="segment">
       ${seg('group', '按班组')}
       ${seg('time', '按时间')}
@@ -879,6 +901,7 @@ function renderStudents() {
       <input type="search" id="studentSearch" placeholder="搜索姓名 / 宿舍 / 班组" value="${esc(state.query)}">
     </div>
     <span class="spacer"></span>
+    <button class="btn sm${state.onlyMissing ? ' primary' : ''}" data-action="stuMissing">缺宿舍 ${state.students.filter((s) => !s.dorm).length}</button>
     <button class="btn" data-action="exportRoster">导出名册 CSV</button>
     <button class="btn primary" data-action="addStudent">补录学生</button>
   </div>
@@ -984,7 +1007,9 @@ function renderStudentTable() {
   if (!host) return;
   const q = state.query.trim().toLowerCase();
   const list = state.students.filter(
-    (s) => !q || [s.name, s.dorm, s.group, s.className].some((v) => String(v || '').toLowerCase().includes(q))
+    (s) =>
+      (!state.onlyMissing || !s.dorm) &&
+      (!q || [s.name, s.dorm, s.group, s.className].some((v) => String(v || '').toLowerCase().includes(q)))
   );
   const onLeave = new Set(recordsOfWeek().map((r) => r.name));
   host.innerHTML = `<table class="data">
@@ -1272,6 +1297,59 @@ function parseTimeIntoForm() {
   note.className = 'parse-note ok';
 }
 
+function summaryLine(r) {
+  const start = r.startAt ? `${md(r.startAt.slice(0, 10))} ${hm(r.startAt)}` : r.timeRaw || '时间待定';
+  const end = r.endAt ? ` → ${md(r.endAt.slice(0, 10))} ${hm(r.endAt)}` : '';
+  const who = [r.name || '未识别', r.dorm || '', r.group || ''].filter(Boolean).join(' ');
+  return `${who} ${start}${end}${r.reason ? ' ' + r.reason : ''}`;
+}
+
+function buildSummaryText() {
+  const w = state.week;
+  if (!w || !w.records.length) return '';
+  const list = w.records.slice().sort((a, b) => {
+    const A = groupRank(a.group);
+    const B = groupRank(b.group);
+    return A[0] - B[0] || A[1] - B[1] || A[2] - B[2] || String(a.startAt || '').localeCompare(String(b.startAt || '')) || String(a.name || '').localeCompare(String(b.name || ''), 'zh');
+  });
+  const counts = { early: 0, sat: 0, sun: 0, other: 0 };
+  list.forEach((r) => (counts[r.category] = (counts[r.category] || 0) + 1));
+  const paper = list.filter((r) => r.check === 'paper').length;
+  const left = list.filter((r) => r.check === 'left').length;
+  const written = list.filter((r) => r.slip && r.slip.written).length;
+  const sent = list.filter((r) => r.slip && r.slip.sent).length;
+  const head = `【${state.settings.org || '周六超能班'}】第 ${termWeekNo(w.saturday)} 周 ${md(w.saturday)} ${wd(w.saturday)} 周末请假 ${list.length} 人`;
+  const stats = `提前 ${counts.early} 人 / 周六 ${counts.sat} 人 / 周日 ${counts.sun} 人${counts.other ? ` / 其他 ${counts.other} 人` : ''}`;
+  const slips = `假条：已写 ${written} · 已发 ${sent} · 有实物 ${paper} · 已走 ${left}`;
+  const blocks = ['early', 'sat', 'sun', 'other']
+    .filter((cat) => cat !== 'other' || counts.other)
+    .map((cat) => {
+      const rows = list.filter((r) => r.category === cat);
+      return `\n【${CATEGORY_LABEL[cat]}】${rows.length} 人\n${rows.length ? rows.map((r) => '· ' + summaryLine(r)).join('\n') : '（无）'}`;
+    })
+    .join('\n');
+  return `${head}\n${stats}\n${slips}\n${blocks}`;
+}
+
+async function copySummary() {
+  const text = buildSummaryText();
+  if (!text) {
+    toast('这一周还没有记录', 'err');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('汇总已复制，可直接发群里', 'ok');
+  } catch {
+    openModal({
+      title: '本周汇总',
+      body: `<div class="hint">浏览器不让自动复制，下面全选后手动复制（Ctrl+A / Ctrl+C）。</div>
+        <textarea class="paste-area" style="min-height:260px;margin-top:10px" readonly>${esc(text)}</textarea>`,
+      foot: '<span class="spacer"></span><button class="btn ghost" data-action="closeModal">关闭</button>',
+    });
+  }
+}
+
 function openExportMenu() {
   const id = state.weekId;
   openModal({
@@ -1421,6 +1499,13 @@ document.addEventListener('click', async (e) => {
         break;
       case 'exportMenu':
         openExportMenu();
+        break;
+      case 'copySummary':
+        await copySummary();
+        break;
+      case 'stuMissing':
+        state.onlyMissing = !state.onlyMissing;
+        render();
         break;
       case 'doParse':
         doParse();
@@ -1721,6 +1806,7 @@ async function deleteRecord(rid) {
   const rec = state.week.records.find((r) => r.id === rid);
   const ok = await confirmDialog(`删除 ${rec ? rec.name : ''} 这条请假记录？`);
   if (!ok) return;
+  const snapshot = rec ? { week: state.week.id, record: { ...rec } } : null;
   const data = await send(`/api/records/${encodeURIComponent(state.week.id)}/${encodeURIComponent(rid)}`, 'DELETE');
   state.revision = data.revision;
   state.week = data.week;
@@ -1728,7 +1814,38 @@ async function deleteRecord(rid) {
   closeModal();
   renderShell();
   render();
-  toast('已删除', 'ok');
+  toast('已删除', 'ok', snapshot ? { label: '撤销', fn: () => undoDelete(snapshot) } : undefined);
+}
+
+async function undoDelete(snapshot) {
+  const r = snapshot.record;
+  try {
+    await send('/api/records', 'POST', {
+      week: snapshot.week,
+      records: [
+        {
+          name: r.name,
+          dorm: r.dorm,
+          group: r.group,
+          startAt: r.startAt,
+          endAt: r.endAt,
+          timeRaw: r.timeRaw,
+          reason: r.reason,
+          note: r.note,
+          phone: r.phone,
+          contact: r.contact,
+          check: r.check,
+        },
+      ],
+    });
+    if (state.weekId !== snapshot.week) await loadWeek(snapshot.week);
+    else state.week = (await api(`/api/week/${encodeURIComponent(snapshot.week)}`)).week;
+    renderShell();
+    render();
+    toast('已恢复', 'ok');
+  } catch (err) {
+    toast(err.message || '恢复失败', 'err');
+  }
 }
 
 async function toggleSlip(rid, field) {
