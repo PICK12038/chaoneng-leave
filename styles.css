@@ -354,6 +354,7 @@ textarea.paste-area { min-height: 210px; font-size: 13.5px; line-height: 1.85; }
 .pt-unk { color: var(--danger); background: var(--danger-bg); }
 .pt-fuzzy { color: #0369a1; background: #eff6ff; }
 .pt-far { color: #7c2d12; background: #fed7aa; margin-right: 6px; }
+.pt-warn { color: #92400e; background: #fef3c7; margin-right: 6px; }
 .banner-warn {
   margin: 0 18px 14px;
   padding: 10px 14px;
