@@ -391,6 +391,39 @@ export function levenshtein(a, b) {
   return prev[n];
 }
 
+const LABEL_STUDENT = /(?:请假学生|学生姓名|学生)\s*[:：]\s*([\u4e00-\u9fa5·]{2,4})/;
+const LABEL_PARENT = /(?:学生家长|家长姓名|家长)\s*[:：]?\s*([\u4e00-\u9fa5]{2,4})/;
+const LABEL_PHONE = /(?:家长联系电话|联系电话|家长电话|电话)\s*[:：]?\s*(\d{6,12})/;
+// 「我是某某学生的家长」「我是某某」——自我介绍里的名字不算请假学生
+const SELF_INTRO = /我(?:是|叫)[^，。；,、\n]{0,12}?学生(?:的)?家长/g;
+
+export function extractHints(text) {
+  const src = String(text || '').replace(/\r/g, '');
+  const sm = src.match(LABEL_STUDENT);
+  const student = sm ? sm[1] : '';
+  const pm = src.match(LABEL_PARENT);
+  let parent = pm ? pm[1] : '';
+  if (parent && parent === student) parent = '';
+  const ph = src.match(LABEL_PHONE);
+  const phone = ph ? ph[1] : '';
+  let masked = src.replace(SELF_INTRO, ' ');
+  if (parent) masked = masked.split(parent).join(' ');
+  if (phone) masked = masked.split(phone).join(' ');
+  masked = masked.replace(/(?:学生家长|家长姓名|家长)\s*[:：]?/g, ' ');
+  return { student, parent, phone, masked };
+}
+
+function resolveHintName(hint, ctx) {
+  const exact = ctx.byName.get(hint) || ctx.sorted.find((s) => s.name === hint);
+  if (exact) return { name: exact.name, confidence: 'exact', student: exact };
+  const name = String(hint || '').replace(/\s/g, '');
+  const spaced = ctx.sorted.find((s) => s.name === name);
+  if (spaced) return { name: spaced.name, confidence: 'exact', student: spaced };
+  const cand = findName(hint, ctx);
+  if (cand.student && cand.confidence === 'fuzzy') return cand;
+  return { name: hint, rawName: hint, confidence: 'unknown', student: null };
+}
+
 function findName(masked, ctx) {
   for (const st of ctx.sorted) {
     if (masked.includes(st.name)) return { name: st.name, confidence: 'exact', student: st };
@@ -602,7 +635,8 @@ function splitNumbered(line) {
 }
 
 export function parseText(text, ctx) {
-  const lines = String(text || '')
+  const hints = extractHints(text);
+  const lines = String(hints.masked || '')
     .replace(/\r/g, '')
     .split(/\n+/)
     .map((l) => l.trim())
@@ -647,6 +681,35 @@ export function parseText(text, ctx) {
       continue;
     }
     merged.push(r);
+  }
+
+  // 「请假学生：某某」是这段文案里唯一可信的姓名来源：
+  // 家长的自我介绍（我是某某学生的家长）、家长姓名都不能当成请假学生
+  let hintApplied = false;
+  if (hints.student) {
+    const rn = resolveHintName(hints.student, ctx);
+    const timed = merged.filter((r) => r.startAt);
+    const pool = timed.length ? timed : merged;
+    const out = [];
+    const seen = new Set();
+    for (const r of pool) {
+      const key = r.startAt || r.raw;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      r.name = rn.name;
+      r.rawName = rn.rawName || rn.name;
+      r.confidence = { ...r.confidence, name: rn.confidence };
+      if (rn.student) {
+        if (!r.dorm) r.dorm = rn.student.dorm || '';
+        if (!r.group) r.group = rn.student.group || '';
+      }
+      if (hints.phone && !r.phone) r.phone = hints.phone;
+      if (hints.parent && !r.contact) r.contact = hints.parent;
+      out.push(r);
+    }
+    merged.length = 0;
+    merged.push(...out);
+    hintApplied = true;
   }
 
   // 整段只有一个学生时，把散落在其他行里的家长电话/姓名补进去
