@@ -404,20 +404,26 @@ export function levenshtein(a, b) {
   return prev[n];
 }
 
-const LABEL_STUDENT = /(?:请假学生|学生姓名|学生)\s*[:：]\s*([\u4e00-\u9fa5·]{2,4})/;
-const LABEL_PARENT = /(?:学生家长|家长姓名|家长)\s*[:：]?\s*([\u4e00-\u9fa5]{2,4})/;
+const LABEL_STUDENT = /(?:请假学生|学生姓名|学生姓名|学生|姓名)\s*[:：；;]\s*([\u4e00-\u9fa5·]{2,4})/;
+const LABEL_PARENT = /(?:学生家长|家长姓名|家长)\s*[:：]\s*([\u4e00-\u9fa5·]{2,4})/;
 const LABEL_PHONE = /(?:家长联系电话|联系电话|家长电话|电话)\s*[:：]?\s*(\d{6,12})/;
 // 「我是某某学生的家长」「我是某某」——自我介绍里的名字不算请假学生
 const SELF_INTRO = /我(?:是|叫)[^，。；,、\n]{0,12}?(?:学生)?(?:的)?(?:家长|妈妈|爸爸|母亲|父亲|监护人)|我(?:是|叫)[^，。；,、\n]{0,6}?老师/g;
 
 export function extractHints(text) {
   const src = String(text || '').replace(/\r/g, '');
-  const sm = src.match(LABEL_STUDENT);
-  const student = sm ? sm[1] : '';
-  const pm = src.match(LABEL_PARENT);
+  // 一块里若还剩多个标签（切分边界误差），取最后一个——它才是这一块自己的学生
+  const last = (re) => {
+    const all = [...src.matchAll(new RegExp(re.source, 'g'))];
+    return all.length ? all[all.length - 1] : null;
+  };
+  const sm = last(LABEL_STUDENT);
+  // 「请假学生：张三同学」这类后缀要去掉
+  const student = sm ? sm[1].replace(/(?:同学|学生)$/, '') : '';
+  const pm = last(LABEL_PARENT);
   let parent = pm ? pm[1] : '';
   if (parent && parent === student) parent = '';
-  const ph = src.match(LABEL_PHONE);
+  const ph = last(LABEL_PHONE);
   const phone = ph ? ph[1] : '';
   let masked = src.replace(SELF_INTRO, ' ');
   if (parent) masked = masked.split(parent).join(' ');
@@ -650,10 +656,14 @@ function splitNumbered(line) {
 }
 
 /* 每条文案一般以「教务老师 / 您好」开场，也可能是空行分段的几条消息 */
-const GREETING_RE = /^(?:教务老师|班主任|老师您好|老师好|尊敬的老师|各位老师|老师们|您好)/;
+const GREETING_RE = /^(?:教务老师|辅导员|导员|班主任|老师您好|老师好|尊敬的老师|各位老师|老师们|您好)/;
 
-function splitBlocks(text) {
-  const src = String(text || '').replace(/\r/g, '');
+export function splitBlocks(text) {
+  // 群消息经常首尾粘连：上一条的「家长联系电话：137…」后面直接跟着「辅导员，您好！」
+  // 先把问候语前面补一个换行，后面的分段逻辑才认得出
+  const src = String(text || '')
+    .replace(/\r/g, '')
+    .replace(/(辅导员|教务老师|班主任|老师)\s*[，,]\s*(您?好)/g, '\n$1，$2\n');
   const raw = [];
   let cur = [];
   const flush = () => {
@@ -672,24 +682,27 @@ function splitBlocks(text) {
   }
   flush();
 
-  // 一个块里挤了多条「请假学生：」→ 以标签为界再切，保留标签前约 120 字（时间通常写在那儿）
+  // 一个块里挤了多条「请假学生：」→ 以标签为界重切。
+  // 家长文案的结构是「问候 + 原因 + 请假时间」在前、「请假学生：X」在后，
+  // 所以每个标签往前取 300 字作为它自己的正文，但不能越过上一个标签（否则会串台）。
   const out = [];
   for (const b of raw) {
     const re = new RegExp(LABEL_STUDENT.source, 'g');
-    const idxs = [];
+    const hits = [];
     let m;
-    while ((m = re.exec(b))) idxs.push(m.index);
-    if (idxs.length <= 1) {
+    while ((m = re.exec(b))) hits.push({ i: m.index, end: m.index + m[0].length });
+    if (hits.length <= 1) {
       out.push(b);
       continue;
     }
-    let start = 0;
-    for (let k = 1; k < idxs.length; k++) {
-      const cut = Math.max(start + 1, idxs[k] - 120);
-      out.push(b.slice(start, cut).trim());
-      start = cut;
+    let cursor = 0;
+    for (let k = 0; k < hits.length; k++) {
+      const start = Math.max(cursor, hits[k].i - 300);
+      const nextStart = k + 1 < hits.length ? Math.max(hits[k].end, hits[k + 1].i - 300) : b.length;
+      const slice = b.slice(start, nextStart).trim();
+      if (slice) out.push(slice);
+      cursor = nextStart;
     }
-    out.push(b.slice(start).trim());
   }
   return out.filter(Boolean);
 }
