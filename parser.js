@@ -47,7 +47,8 @@ const STOP = new Set(
 /* 原因清洗用的词表：只丢掉纯格式词，不丢「回家 / 看病」这类真实原因 */
 const REASON_STOP = new Set(
   '请假 周末 周六 周日 周天 星期 宿舍 姓名 序号 备注 已写 已发 假条 接龙 老师 家长 谢谢 收到 麻烦 ' +
-    '你好 您好 走读 请假条 以上 以下 各位 知悉 出勤 考勤 信息 原因 提前 下课后 晚自习 放学 本周 周末请假 学生'
+    '你好 您好 走读 请假条 以上 以下 各位 知悉 出勤 考勤 信息 原因 提前 下课后 晚自习 放学 本周 周末请假 学生 ' +
+    '我是 我 妈妈 爸爸 母亲 父亲 监护人 家长您好 的 因 因为'
     .split(/\s+/)
 );
 const REASON_LEFTOVER = /^(?:[到至]?\s*(?:周|星期)[一二三四五六日天]?|[到至上下前后]{1,2}|[半]|\d+[点时分])$/;
@@ -61,7 +62,7 @@ const REASON_NOISE = [
 ];
 
 /* 「因为出去玩原因需要请假」→ 直接把中间的词当原因 */
-const REASON_HINT = /因为([\u4e00-\u9fa5A-Za-z0-9]{1,20}?)原因/;
+const REASON_HINT = /(?:因为|由于|因)\s*([\u4e00-\u9fa5A-Za-z0-9]{1,12}?)(?:的)?(?:原因)?(?=[，。；,;\n]|需要|需|申请|要|请假|离校|回家|$)/;
 
 /* ------------------------------------------------------------------ */
 /* 文本归一化                                                          */
@@ -395,7 +396,7 @@ const LABEL_STUDENT = /(?:请假学生|学生姓名|学生)\s*[:：]\s*([\u4e00-
 const LABEL_PARENT = /(?:学生家长|家长姓名|家长)\s*[:：]?\s*([\u4e00-\u9fa5]{2,4})/;
 const LABEL_PHONE = /(?:家长联系电话|联系电话|家长电话|电话)\s*[:：]?\s*(\d{6,12})/;
 // 「我是某某学生的家长」「我是某某」——自我介绍里的名字不算请假学生
-const SELF_INTRO = /我(?:是|叫)[^，。；,、\n]{0,12}?学生(?:的)?家长/g;
+const SELF_INTRO = /我(?:是|叫)[^，。；,、\n]{0,12}?(?:学生)?(?:的)?(?:家长|妈妈|爸爸|母亲|父亲|监护人)|我(?:是|叫)[^，。；,、\n]{0,6}?老师/g;
 
 export function extractHints(text) {
   const src = String(text || '').replace(/\r/g, '');
@@ -410,6 +411,7 @@ export function extractHints(text) {
   if (parent) masked = masked.split(parent).join(' ');
   if (phone) masked = masked.split(phone).join(' ');
   masked = masked.replace(/(?:学生家长|家长姓名|家长)\s*[:：]?/g, ' ');
+  masked = masked.replace(/(?:请假学生|学生姓名)\s*[:：]?/g, ' ');
   return { student, parent, phone, masked };
 }
 
@@ -552,6 +554,7 @@ export function parseOne(rawLine, ctx) {
 
   const hint = line.match(REASON_HINT);
   let rest = masked;
+  rest = rest.replace(/我(?:是|叫)[^，。；,、\n]{0,12}/g, ' ');
   for (const re of REASON_NOISE) rest = rest.replace(re, ' ');
   if (nm.name) rest = rest.split(nm.name).join('\u0001');
   if (contact) rest = rest.split(contact).join('\u0001');
