@@ -11,6 +11,9 @@ import {
   normalizeDorm,
   normalizeGroup,
   levenshtein,
+  decodeCutoff,
+  encodeCutoff,
+  DEFAULT_CUTOFF,
 } from './parser.js';
 
 /* ================================================================== */
@@ -60,7 +63,7 @@ const state = {
     return id;
   })(),
   revision: -1,
-  settings: { org: '周六超能班', cutoff: '21:30' },
+  settings: { org: '周六超能班', cutoff: '21:30', sunStart: '00:00' },
   students: [],
   weeks: [],
   week: null,
@@ -422,7 +425,7 @@ function renderWeekShell() {
       </div>
       <button class="wkb-nav" data-action="nextWeek" title="下一周" aria-label="下一周"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
       ${isThisWeek ? '' : `<button class="btn sm wkb-back" data-action="thisWeek">回到本周</button>`}
-      <span class="hb-meta" title="截止 ${md(w.saturday)} ${w.cutoff || '21:30'} · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校">截止 ${md(w.saturday)} ${w.cutoff || '21:30'} · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校</span>
+      <span class="hb-meta" title="提前请假截止 ${md(w.saturday)} ${cutText(w)} · ${sunText(w)}起算周日 · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校">提前截止 ${md(w.saturday)} ${cutText(w)} · ${sunText(w)}起算周日 · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校</span>
       <span class="hb-grow"></span>
       <div class="hb-stats">
         <button class="hs ${state.filter === 'all' ? 'on' : ''}" data-action="filter" data-filter="all" title="全部请假"><b>${total}</b><span>请假</span></button>
@@ -713,8 +716,19 @@ function renderPreview() {
   </div>`;
 }
 
+/* 顶部窄条用的两个分界文案 */
+function cutText(w) {
+  return decodeCutoff((w && w.cutoff) || state.settings.cutoff).cutoff;
+}
+function sunText(w) {
+  const v = decodeCutoff((w && w.cutoff) || state.settings.cutoff).sunStart;
+  return v === '00:00' ? '次日 00:00' : `次日 ${v}`;
+}
+
 function weekCtx() {
-  return { saturday: state.week ? state.week.saturday : '', cutoff: (state.week && state.week.cutoff) || state.settings.cutoff };
+  const raw = (state.week && state.week.cutoff) || state.settings.cutoff || DEFAULT_CUTOFF;
+  const { cutoff, sunStart } = decodeCutoff(raw);
+  return { saturday: state.week ? state.week.saturday : '', cutoff, sunStart };
 }
 
 function isoOfDate(d) {
@@ -1143,8 +1157,10 @@ function renderSettings() {
   <div class="grid-cards" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))">
     <div class="card"><div class="card-head"><div class="card-title">基础设置</div></div><div class="card-body">
       <div class="field"><label>组织名称</label><input type="text" id="setOrg" value="${esc(s.org || '')}"></div>
-      <div class="field"><label>提前请假截止时间<span class="sub">早于周六的这个时间算「提前请假」</span></label>
-        <input type="time" id="setCutoff" value="${esc(s.cutoff || '21:30')}"></div>
+      <div class="field"><label>提前请假截止<span class="sub">周六这个时间之前走 = 提前请假；之后 = 周六</span></label>
+        <input type="time" id="setCutoff" value="${esc(decodeCutoff(s.cutoff).cutoff)}"></div>
+      <div class="field"><label>周日从几点开始算<span class="sub">周六截止后到第二天这个时间走，仍算周六；之后再算周日</span></label>
+        <input type="time" id="setSunStart" value="${esc(decodeCutoff(s.cutoff).sunStart)}"></div>
       <button class="btn primary" data-action="saveSettings">保存设置</button>
     </div></div>
 
@@ -2056,7 +2072,7 @@ async function deleteStudent(name) {
 }
 
 async function saveSettings() {
-  const payload = { org: $('#setOrg').value.trim(), cutoff: $('#setCutoff').value };
+  const payload = { org: $('#setOrg').value.trim(), cutoff: encodeCutoff($('#setCutoff').value, $('#setSunStart').value) };
   const data = await send('/api/settings', 'PUT', payload);
   state.revision = data.revision;
   state.settings = data.settings;
