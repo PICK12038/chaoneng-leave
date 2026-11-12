@@ -38,9 +38,10 @@
       weeks: [{ id: '2026-10-24', saturday: '2026-10-24', cutoff: '21:30', note: '', records: [] }],
     };
     // 演示模式里的分类计算（和线上同一个规则）
+    // 演示模式的分类计算：与线上同一套规则（最多三个时间点，可带等号前缀）
     const mockCatOf = (startAt, sat, rawCut) => {
       if (!startAt) return 'sat';
-      const [a, b] = String(rawCut || '21:30').split('|');
+      const [a, b, c] = String(rawCut || '21:30').trim().replace(/^=/, '').split('|');
       const ok = (v) => /^\d{1,2}:\d{2}$/.test(String(v || '').trim());
       const pad = (v, d) => {
         if (!ok(v)) return d;
@@ -49,13 +50,14 @@
       };
       const cutoff = pad(a, '21:30');
       const sunStart = pad(b, '00:00');
+      const sunEnd = pad(c, '23:59');
       const s0 = String(startAt).replace(' ', 'T').slice(0, 16);
       const d = new Date(sat + 'T12:00:00');
       d.setDate(d.getDate() + 1);
       const sun = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
       if (s0 < sat + 'T' + cutoff) return 'early';
       if (s0 < sun + 'T' + sunStart) return 'sat';
-      if (s0 <= sun + 'T23:59') return 'sun';
+      if (s0 <= sun + 'T' + sunEnd) return 'sun';
       return 'other';
     };
 
@@ -132,6 +134,17 @@
         M.students = M.students.filter((s) => s.name !== decodeURIComponent(p.slice('/api/students/'.length)));
         return { ok: true, students: M.students, revision: 0 };
       }
+      if (p.startsWith('/api/week-rule/')) {
+        const wid = decodeURIComponent(p.slice('/api/week-rule/'.length));
+        const w = findWeek(wid);
+        if (!w) throw new Error('没找到该周');
+        const raw = body && body.cutoff ? String(body.cutoff).trim() : '';
+        w.cutoff = raw ? (raw.startsWith('=') ? raw : '=' + raw) : M.settings.cutoff;
+        w.records.forEach((r) => {
+          if (r.startAt) r.category = mockCatOf(r.startAt, w.saturday, w.cutoff);
+        });
+        return { ok: true, week: w, weeks: meta(), revision: 0 };
+      }
       if (p === '/api/weeks' && method === 'POST') {
         const sat = body.saturday;
         if (!findWeek(sat)) M.weeks.push({ id: sat, saturday: sat, cutoff: M.settings.cutoff, note: '', records: [] });
@@ -145,6 +158,7 @@
       if (p === '/api/settings' && method === 'PUT') {
         Object.assign(M.settings, { org: body.org, cutoff: body.cutoff });
         M.weeks.forEach((w) => {
+          if (String(w.cutoff || '').startsWith('=')) return;
           w.cutoff = body.cutoff;
           w.records.forEach((r) => {
             if (r.startAt) r.category = mockCatOf(r.startAt, w.saturday, body.cutoff);
@@ -284,21 +298,25 @@
   });
 
   /* 分类以「开始时间」为准：周六 21:30 前=提前请假，周六当天=周六，次日(周日)=周日 */
-  /* cutoff 里可能带 `|`，形如 "21:30|06:00"：前者是提前请假截止，后者是周日开始算的时间 */
+  /* 时间规则：cutoff 列里用竖线串 1~3 个时间点
+        "21:30"             → 提前截止 21:30 / 周日 00:00 起 / 周日 23:59 止（默认口径）
+        "21:30|06:00"       → 周日从 06:00 起算
+        "19:00|05:00|18:00" → 调休周：提前截止 19:00、周日 05:00 起、18:00 后算其他
+     以等号开头（"=19:00|..."）表示「这一周单独设定」，不带等号就是全局设置。 */
   const splitCut = (raw) => {
-    const [a, b] = String(raw == null ? '' : raw).split('|');
+    const [a, b, c] = String(raw == null ? '' : raw).trim().replace(/^=/, '').split('|');
     const ok = (v) => /^\d{1,2}:\d{2}$/.test(String(v || '').trim());
     const norm = (v, d) => {
       if (!ok(v)) return d;
       const [h, m] = String(v).trim().split(':');
       return String(Math.min(23, Number(h))).padStart(2, '0') + ':' + String(Math.min(59, Number(m))).padStart(2, '0');
     };
-    return { cutoff: norm(a, '21:30'), sunStart: norm(b, '00:00') };
+    return { cutoff: norm(a, '21:30'), sunStart: norm(b, '00:00'), sunEnd: norm(c, '23:59') };
   };
 
   const catOfWeek = (startAt, weekId, rawCutoff) => {
     if (!startAt) return 'sat';
-    const { cutoff, sunStart } = splitCut(rawCutoff);
+    const { cutoff, sunStart, sunEnd } = splitCut(rawCutoff);
     const s = String(startAt).replace(' ', 'T').slice(0, 16);
     const sat = String(weekId || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(sat)) return 'sat';
@@ -307,8 +325,14 @@
     d.setDate(d.getDate() + 1);
     const sunday = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     if (s < `${sunday}T${sunStart}`) return 'sat';
-    if (s <= `${sunday}T23:59`) return 'sun';
+    if (s <= `${sunday}T${sunEnd}`) return 'sun';
     return 'other';
+  };
+
+  /* 一周实际生效的规则：周次自己写过（带等号）就用它，否则用全局设置 */
+  const effCut = (weekRow, globalCut) => {
+    const w = (weekRow && weekRow.cutoff) || '';
+    return String(w).startsWith('=') ? w : globalCut || w || '21:30';
   };
 
   const toRecordRow = (r, weekId) => {
@@ -337,12 +361,23 @@
     return row;
   };
 
+  /* 全局设置里的时间规则（settings.cutoff） */
+  async function globalCut() {
+    try {
+      const r = await pg('settings?select=cutoff&id=eq.1');
+      return (r && r[0] && r[0].cutoff) || '21:30';
+    } catch {
+      return '21:30';
+    }
+  }
+
   async function weekMeta() {
     const weeks = await pg('weeks?select=*&order=saturday.desc');
     if (!weeks || !weeks.length) return [];
     const ids = weeks.map((w) => w.id);
     const rows = await pg(`records?select=week_id,start_at,cat,check_state,written,sent&week_id=in.(${ids.map(enc).join(',')})`);
-    const cutByWeek = new Map(weeks.map((w) => [w.id, w.cutoff || '21:30']));
+    const gCut = await globalCut();
+    const cutByWeek = new Map(weeks.map((w) => [w.id, effCut(w, gCut)]));
     const byWeek = new Map();
     for (const r of rows || []) {
       if (!byWeek.has(r.week_id)) byWeek.set(r.week_id, { total: 0, early: 0, sat: 0, sun: 0, other: 0, written: 0, sent: 0, paper: 0, left: 0 });
@@ -360,7 +395,8 @@
       return {
         id: w.id,
         saturday: String(w.saturday),
-        cutoff: w.cutoff || '21:30',
+        cutoff: effCut(w, gCut),
+        override: String(w.cutoff || '').startsWith('='),
         note: w.note || '',
         total: s.total,
         counts: { early: s.early, sat: s.sat, sun: s.sun, other: s.other },
@@ -391,9 +427,10 @@
   }
 
   async function weekData(id) {
-    const [wRows, recs] = await Promise.all([
+    const [wRows, recs, gCut] = await Promise.all([
       pg(`weeks?select=*&id=eq.${enc(id)}`),
       pg(`records?select=*&week_id=eq.${enc(id)}&order=start_at.asc`),
+      globalCut(),
     ]);
     if (!wRows || !wRows.length) {
       const err = new Error('没找到该周');
@@ -401,14 +438,16 @@
       throw err;
     }
     const w = wRows[0];
+    const cut = effCut(w, gCut);
     return {
       revision: await revision(),
       week: {
         id: w.id,
         saturday: String(w.saturday),
-        cutoff: w.cutoff || '21:30',
+        cutoff: cut,
+        override: String(w.cutoff || '').startsWith('='),
         note: w.note || '',
-        records: (recs || []).map((r) => toRecord(r, w.cutoff)),
+        records: (recs || []).map((r) => toRecord(r, cut)),
       },
     };
   }
@@ -527,8 +566,10 @@
       let recat = 0;
       try {
         const weeks = await pg('weeks?select=id,cutoff');
-        const cutByWeek = new Map((weeks || []).map((w) => [w.id, body.cutoff]));
+        const cutByWeek = new Map((weeks || []).map((w) => [w.id, effCut(w, body.cutoff)]));
         for (const w of weeks || []) {
+          // 亲手给某周设过规则的，不要被全局设置覆盖
+          if (String(w.cutoff || '').startsWith('=')) continue;
           await pg(`weeks?id=eq.${enc(w.id)}`, { method: 'PATCH', body: { cutoff: body.cutoff }, prefer: 'return=minimal' }).catch(() => null);
         }
         const ids = (weeks || []).map((w) => w.id);
@@ -571,6 +612,31 @@
       await pg(`students?name=eq.${enc(decodeURIComponent(p.slice('/api/students/'.length)))}`, { method: 'DELETE', prefer: 'return=minimal' });
       const all = await pg('students?select=*&order=name.asc');
       return { ok: true, students: (all || []).map(toStudent), revision: await revision() };
+    }
+    if (p.startsWith('/api/week-rule/') && (method === 'POST' || method === 'PUT')) {
+      // 给某一周单独设时间规则；body.cutoff 传空 = 恢复跟随全局设置
+      const wid = decodeURIComponent(p.slice('/api/week-rule/'.length));
+      const raw = body && body.cutoff ? String(body.cutoff).trim() : '';
+      const val = raw ? (raw.startsWith('=') ? raw : '=' + raw) : '';
+      await pg(`weeks?id=eq.${enc(wid)}`, { method: 'PATCH', body: { cutoff: val }, prefer: 'return=minimal' });
+      // 规则变了 → 这一周已有记录的分类立刻重算
+      const wk = await pg(`weeks?select=*&id=eq.${enc(wid)}`);
+      if (wk && wk[0]) {
+        const cut = effCut(wk[0], await globalCut());
+        const rows = await pg(`records?select=id,start_at,cat&week_id=eq.${enc(wid)}`);
+        const groups = new Map();
+        for (const r of rows || []) {
+          if (!r.start_at) continue;
+          const want = catOfWeek(shortTime(r.start_at), wid, cut);
+          if (want === r.cat) continue;
+          if (!groups.has(want)) groups.set(want, []);
+          groups.get(want).push(r.id);
+        }
+        for (const [cat, list] of groups) {
+          await pg(`records?id=in.(${list.map(enc).join(',')})`, { method: 'PATCH', body: { cat }, prefer: 'return=minimal' });
+        }
+      }
+      return { ok: true, week: (await weekData(wid)).week, weeks: await weekMeta(), revision: await revision() };
     }
     if (p === '/api/weeks' && method === 'POST') {
       const sat = body.saturday || '';
