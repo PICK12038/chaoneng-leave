@@ -499,13 +499,19 @@ export function normalizeDorm(text) {
 /* 分类                                                                */
 /* ------------------------------------------------------------------ */
 
-/* 分类边界：提前请假截止（周六几点之后不算提前）与 周六→周日分界（周日几点之后算周日）。
-   两个值都允许现场调整；存在 settings.cutoff 这一列里：
-     只有一个值时（如 "21:30"）= 分界保持默认 00:00
-     两个值时用竖线分隔（如 "21:30|06:00"）
-   —— 这样不用改数据库表结构，历史数据也完全兼容。 */
+/* 一条「周时间规则」最多三个时间点，按顺序决定分类边界：
+     提前请假：周六 < 截止1
+     周六    ：周六 截止1 起 → 周日 截止2 之前
+     周日    ：周日 截止2 起 → 周日 截止3 之前
+     其他    ：更晚
+   规则存在 cutoff 这一个文本列里，用竖线串起来：
+     "21:30"                 → 21:30 / 次日 00:00 / 23:59（默认口径）
+     "21:30|06:00"           → 周日从 06:00 算起
+     "19:00|05:00|18:00"     → 调休周：提前截止 19:00、周日 05:00 起、周日 18:00 后算其他
+   —— 不新增数据库字段，历史数据读到的 "21:30" 依然是默认口径。 */
 export const DEFAULT_CUTOFF = '21:30';
 export const DEFAULT_SUN_START = '00:00';
+export const DEFAULT_SUN_END = '23:59';
 
 const isTime = (v) => /^\d{1,2}:\d{1,2}$/.test(String(v || '').trim());
 const norm = (v, fallback) => {
@@ -514,29 +520,55 @@ const norm = (v, fallback) => {
   return `${String(Math.min(23, Number(h))).padStart(2, '0')}:${String(Math.min(59, Number(m))).padStart(2, '0')}`;
 };
 
-export function decodeCutoff(raw) {
-  const s = String(raw == null ? '' : raw).trim();
-  const [a, b] = s.split('|');
-  return { cutoff: norm(a, DEFAULT_CUTOFF), sunStart: norm(b, DEFAULT_SUN_START) };
+/* 周次自己的规则以等号开头（如 "=19:00|05:00"）；空值或不带等号表示跟随全局设置 */
+export function isWeekOverride(raw) {
+  return /^=/.test(String(raw == null ? '' : raw).trim());
 }
 
-export function encodeCutoff(cutoff, sunStart) {
+export function decodeCutoff(raw) {
+  const s = String(raw == null ? '' : raw).trim().replace(/^=/, '');
+  const [a, b, c] = s.split('|');
+  return {
+    cutoff: norm(a, DEFAULT_CUTOFF),
+    sunStart: norm(b, DEFAULT_SUN_START),
+    sunEnd: norm(c, DEFAULT_SUN_END),
+  };
+}
+
+export function encodeCutoff(cutoff, sunStart, sunEnd) {
   const c = norm(cutoff, DEFAULT_CUTOFF);
   const s = norm(sunStart, DEFAULT_SUN_START);
-  return s === DEFAULT_SUN_START ? c : `${c}|${s}`;
+  const e = norm(sunEnd, DEFAULT_SUN_END);
+  if (e !== DEFAULT_SUN_END) return `${c}|${s}|${e}`;
+  if (s !== DEFAULT_SUN_START) return `${c}|${s}`;
+  return c;
+}
+
+/** 这条规则是不是「什么都没改」（等价于默认口径） */
+export function isDefaultCutoff(raw) {
+  const d = decodeCutoff(raw);
+  return d.cutoff === DEFAULT_CUTOFF && d.sunStart === DEFAULT_SUN_START && d.sunEnd === DEFAULT_SUN_END;
+}
+
+/** 用一句话说明这条规则（设置页 / 顶部窄条都用它） */
+export function cutoffText(raw) {
+  const { cutoff, sunStart, sunEnd } = decodeCutoff(raw);
+  if (isDefaultCutoff(raw)) return `提前截止周六 ${cutoff}，${sunStart} 起算周日`;
+  return `提前截止 ${cutoff} · 周日 ${sunStart} 起 · 周日 ${sunEnd} 后算其他`;
 }
 
 export function categoryOf(startIso, week) {
   if (!startIso) return 'other';
   const sat = (week && week.saturday) || '2026-08-15';
-  const dec = decodeCutoff(week && week.cutoff);
-  const cutoff = decodeCutoff(week && week.cutoff).cutoff;
-  const sunStart = week && week.sunStart ? norm(week.sunStart, DEFAULT_SUN_START) : dec.sunStart;
+  const base = decodeCutoff(week && week.cutoff);
+  const cutoff = base.cutoff;
+  const sunStart = week && week.sunStart ? norm(week.sunStart, DEFAULT_SUN_START) : base.sunStart;
+  const sunEnd = week && week.sunEnd ? norm(week.sunEnd, DEFAULT_SUN_END) : base.sunEnd;
   if (startIso < `${sat}T${cutoff}`) return 'early';
   const sun = addDaysStr(sat, 1);
-  // 周六 21:30 之后、周日 sunStart 之前，仍然算「周六」
+  // 周六截止之后、周日 sunStart 之前，仍然算「周六」（夜里出发的不会被算成周日）
   if (startIso < `${sun}T${sunStart}`) return 'sat';
-  if (startIso <= `${sun}T23:59`) return 'sun';
+  if (startIso <= `${sun}T${sunEnd}`) return 'sun';
   return 'other';
 }
 
