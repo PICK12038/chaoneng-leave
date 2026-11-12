@@ -329,13 +329,17 @@ tr.group-row .gcount { color: var(--muted); font-weight: 500; margin-left: 8px; 
 .empty .e-title { font-size: 14px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
 .empty .e-sub { font-size: 12.5px; }
 /* ============ 批量条 ============ */
+/* 批量条固定在视口底部：表格很长时也永远看得见 */
 .bulkbar {
-  position: sticky; bottom: 18px; z-index: 15;
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  margin: 14px auto 0; padding: 9px 12px; width: fit-content; max-width: 100%;
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 40;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
+  padding: 8px 11px; width: fit-content; max-width: min(96vw, 980px);
   background: #14162a; color: #fff; border-radius: 13px; box-shadow: var(--shadow-lg);
   animation: rise .18s ease;
 }
+.bulkbar .btn { height: 30px; padding: 0 11px; font-size: 12.5px; background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.18); color: #eceafd; }
+.bulkbar .btn:hover { background: rgba(255,255,255,.2); color: #fff; }
+.bulkbar .btn.danger { background: rgba(248,113,113,.18); border-color: rgba(248,113,113,.45); color: #fecaca; }
 .bulkbar .bt { font-size: 12.5px; color: #c6c9d8; }
 .bulkbar .bt b { color: #fff; font-family: var(--mono); }
 .bulkbar .btn { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.16); color: #eeecff; height: 30px; font-size: 12.5px; }
