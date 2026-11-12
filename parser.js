@@ -499,13 +499,43 @@ export function normalizeDorm(text) {
 /* 分类                                                                */
 /* ------------------------------------------------------------------ */
 
+/* 分类边界：提前请假截止（周六几点之后不算提前）与 周六→周日分界（周日几点之后算周日）。
+   两个值都允许现场调整；存在 settings.cutoff 这一列里：
+     只有一个值时（如 "21:30"）= 分界保持默认 00:00
+     两个值时用竖线分隔（如 "21:30|06:00"）
+   —— 这样不用改数据库表结构，历史数据也完全兼容。 */
+export const DEFAULT_CUTOFF = '21:30';
+export const DEFAULT_SUN_START = '00:00';
+
+const isTime = (v) => /^\d{1,2}:\d{1,2}$/.test(String(v || '').trim());
+const norm = (v, fallback) => {
+  if (!isTime(v)) return fallback;
+  const [h, m] = String(v).trim().split(':');
+  return `${String(Math.min(23, Number(h))).padStart(2, '0')}:${String(Math.min(59, Number(m))).padStart(2, '0')}`;
+};
+
+export function decodeCutoff(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  const [a, b] = s.split('|');
+  return { cutoff: norm(a, DEFAULT_CUTOFF), sunStart: norm(b, DEFAULT_SUN_START) };
+}
+
+export function encodeCutoff(cutoff, sunStart) {
+  const c = norm(cutoff, DEFAULT_CUTOFF);
+  const s = norm(sunStart, DEFAULT_SUN_START);
+  return s === DEFAULT_SUN_START ? c : `${c}|${s}`;
+}
+
 export function categoryOf(startIso, week) {
   if (!startIso) return 'other';
   const sat = (week && week.saturday) || '2026-08-15';
-  const cutoff = (week && week.cutoff) || '21:30';
+  const dec = decodeCutoff(week && week.cutoff);
+  const cutoff = decodeCutoff(week && week.cutoff).cutoff;
+  const sunStart = week && week.sunStart ? norm(week.sunStart, DEFAULT_SUN_START) : dec.sunStart;
   if (startIso < `${sat}T${cutoff}`) return 'early';
   const sun = addDaysStr(sat, 1);
-  if (startIso < `${sun}T00:00`) return 'sat';
+  // 周六 21:30 之后、周日 sunStart 之前，仍然算「周六」
+  if (startIso < `${sun}T${sunStart}`) return 'sat';
   if (startIso <= `${sun}T23:59`) return 'sun';
   return 'other';
 }
