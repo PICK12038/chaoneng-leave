@@ -70,8 +70,17 @@ const REASON_HINT = /(?:因为|由于|因)\s*([\u4e00-\u9fa5A-Za-z0-9]{1,12}?)(?
 
 export function normalizeLine(input) {
   let s = String(input == null ? '' : input);
+  // 零宽字符（粘贴自网页/微信常带）先清掉，否则姓名会被劈开
+  s = s.replace(/[\u200b-\u200f\u2060\ufeff]/g, '');
   s = s.normalize('NFKC');
   s = s.replace(/[\u00a0\u3000]/g, ' ').replace(/\t/g, ' ');
+  // 括号只保留内容：「10月24日（周六）」「周六(10月24日)」都还原成正常写法
+  s = s.replace(/[（(]\s*(?:周|星期|礼拜)?[一二三四五六日天]?\s*[)）]/g, ' ');
+  s = s.replace(/[（(]\s*([^()（）]{1,20}?)\s*[)）]/g, ' $1 ');
+  // 英文写法：Oct 24 / 24th / to / until
+  s = s.replace(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s*(\d{1,2})\b/gi, '$1日');
+  s = s.replace(/\b(\d{1,2})(?:st|nd|rd|th)\b/gi, '$1日');
+  s = s.replace(/\b(?:to|until|till|thru|-{1,2}>|—>)\b/gi, ' 至 ');
   s = s.replace(/[—–－]+/g, '-');
   s = s.replace(/[~～]/g, '~');
   s = s.replace(/\s*至\s*/g, '至');
@@ -271,8 +280,9 @@ export function dayGap(fromIso, toIso) {
 
 function gapKind(gap) {
   if (gap == null) return 'none';
-  if (/[至到\-~]/.test(gap)) return 'sep';
-  const stripped = gap.replace(/[\s,，、;；:：日号分点左右前后钟]/g, '');
+  // 「到 / 至 / - / ~ / — / → / to / 止 / 起」都当分隔
+  if (/[至到\-~—–→>]|\bto\b|\buntil\b/i.test(gap)) return 'sep';
+  const stripped = gap.replace(/[\s,,，、;；:：日号分点左右前后钟点（）()【】\[\]止起]/g, '');
   if (!stripped) return 'ws';
   if (PERIOD_WORDS.some((p) => stripped === p)) return 'period';
   return 'other';
@@ -404,24 +414,54 @@ export function levenshtein(a, b) {
   return prev[n];
 }
 
-const LABEL_STUDENT = /(?:请假学生|学生姓名|学生姓名|学生|姓名)\s*[:：；;]\s*([\u4e00-\u9fa5·]{2,4})/;
-const LABEL_PARENT = /(?:学生家长|家长姓名|家长)\s*[:：]\s*([\u4e00-\u9fa5·]{2,4})/;
-const LABEL_PHONE = /(?:家长联系电话|联系电话|家长电话|电话)\s*[:：]?\s*(\d{6,12})/;
+/* 姓名标签：中英文都认。名字中间可以有空格（不跨行），标签和名字之间可隔一个换行。
+   冒号必填（半角/全角/分号都行）；方括号或「标签独占一行」时可不写冒号。 */
+const NAME_CH = '([\\u4e00-\\u9fa5·][\\u4e00-\\u9fa5· \\t]{0,10}|[A-Za-z][A-Za-z \\t]{1,18})';
+const STUDENT_LABELS = '请假学生|学生姓名|学生名字|姓名|名字|Student Name|Student|Name';
+const PARENT_LABELS = '学生家长|家长姓名|家长|监护人|Parent';
+const LABEL_GAP = '[ \\t]*[:：;；][ \\t]*\\n?[ \\t]*';
+
+const LABEL_STUDENT = new RegExp(
+  '(?:' + STUDENT_LABELS + ')' + LABEL_GAP + NAME_CH +
+    '|【[ \\t]*(?:' + STUDENT_LABELS + ')[ \\t]*】[ \\t]*[:：;；]?[ \\t]*' + NAME_CH +
+    '|^[ \\t]*(?:请假学生|学生姓名|姓名)[ \\t]*\\n[ \\t]*' + NAME_CH,
+  'im'
+);
+
+const LABEL_PARENT = new RegExp('(?:' + PARENT_LABELS + ')' + LABEL_GAP + NAME_CH, 'i');
+
+const LABEL_PHONE = /(?:家长联系电话|联系电话|家长电话|电话|手机|手机号|Phone|Tel)\s*[:：]?\s*(\d{6,12})/i;
 // 「我是某某学生的家长」「我是某某」——自我介绍里的名字不算请假学生
 const SELF_INTRO = /我(?:是|叫)[^，。；,、\n]{0,12}?(?:学生)?(?:的)?(?:家长|妈妈|爸爸|母亲|父亲|监护人)|我(?:是|叫)[^，。；,、\n]{0,6}?老师/g;
 
 export function extractHints(text) {
-  const src = String(text || '').replace(/\r/g, '');
+  const src = normalizeLine(String(text || '').replace(/\r/g, ''));
   // 一块里若还剩多个标签（切分边界误差），取最后一个——它才是这一块自己的学生
+  // 注意保留原 flags（im），否则 ^ 和多行锚点会失效
   const last = (re) => {
-    const all = [...src.matchAll(new RegExp(re.source, 'g'))];
+    const flags = re.flags.includes('g') ? re.flags : re.flags + 'g';
+    const all = [...src.matchAll(new RegExp(re.source, flags))];
     return all.length ? all[all.length - 1] : null;
   };
   const sm = last(LABEL_STUDENT);
-  // 「请假学生：张三同学」这类后缀要去掉
-  const student = sm ? sm[1].replace(/(?:同学|学生)$/, '') : '';
+  // 「莫 海 妍」去空格；「张三同学 / 张三学生 / 张三同」去后缀
+  const cleanName = (v) => {
+    let t = String(v || '').replace(/\s+/g, '');
+    // 标签后面常跟着宿舍 / 班组 / 走读，把姓名截到这个位置为止
+    t = t.replace(/[A-Za-z]\d{3}.*$/, '');
+    t = t.replace(/(?:超能|丰泰).*$/, '');
+    t = t.replace(/走读.*$/, '');
+    t = t.replace(/[\dA-Za-z].*$/, '');
+    // 「张三同学 / 张三学生」去后缀
+    t = t.replace(/(?:同学|学生|小朋友)$/g, '');
+    // 纯拼音/英文名（很少见）：别丢，原样留着让老师在下拉里选
+    if (!t) t = String(v || '').replace(/s+/g, '').replace(/[^A-Za-z]/g, '');
+    return t;
+  };
+  // 三个分支各自一个捕获组：普通标签 / 方括号 / 标签独占一行
+  const student = sm ? cleanName(sm[1] || sm[2] || sm[3] || '') : '';
   const pm = last(LABEL_PARENT);
-  let parent = pm ? pm[1] : '';
+  let parent = pm ? cleanName(pm[1]) : '';
   if (parent && parent === student) parent = '';
   const ph = last(LABEL_PHONE);
   const phone = ph ? ph[1] : '';
@@ -431,6 +471,16 @@ export function extractHints(text) {
   masked = masked.replace(/(?:学生家长|家长姓名|家长)\s*[:：]?/g, ' ');
   masked = masked.replace(/(?:请假学生|学生姓名)\s*[:：]?/g, ' ');
   return { student, parent, phone, masked };
+}
+
+/* 没有「请假学生：」时，从自我介绍里兜底找人名（只在名册里能对上的才算） */
+function nameFromIntro(src, ctx) {
+  const re = /我(?:是|叫)\s*([\u4e00-\u9fa5·]{2,4})\s*(?:同学|学生|小朋友)?\s*(?:的)?\s*(?:家长|妈妈|爸爸|母亲|父亲|监护人|本人)/g;
+  for (const m of String(src || '').matchAll(re)) {
+    const hit = ctx.byName.get(m[1]) || ctx.sorted.find((x) => x.name === m[1]);
+    if (hit) return hit.name;
+  }
+  return '';
 }
 
 function resolveHintName(hint, ctx) {
@@ -766,7 +816,46 @@ export function splitBlocks(text) {
       cursor = nextStart;
     }
   }
-  return out.filter(Boolean);
+  return mergeOrphanLabels(out.filter(Boolean));
+}
+
+/* 空行常把「请假学生：某某」和时间句拆成两块 ——
+   有姓名标签却没有时间的块，并到相邻的那一块去。 */
+function mergeOrphanLabels(blocks) {
+  const hasTime = (b) => /\d{1,2}\s*[月.．\/]|\d{1,2}\s*[日号]|\d{1,2}\s*[:：时点]/.test(b);
+  const hasLabel = (b) => new RegExp(LABEL_STUDENT.source, 'i').test(b);
+  const out = [];
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (hasLabel(b) && !hasTime(b)) {
+      // 往后找最近的、有时间且没标签的块
+      let merged = false;
+      for (let j = i + 1; j < blocks.length; j++) {
+        if (hasTime(blocks[j]) && !hasLabel(blocks[j])) {
+          out.push(b + '\n' + blocks[j]);
+          blocks.splice(j, 1);
+          merged = true;
+          break;
+        }
+        if (hasLabel(blocks[j])) break;
+      }
+      if (merged) continue;
+      // 前面已入栈的块如果没标签，就并给它
+      if (out.length && !hasLabel(out[out.length - 1])) {
+        out[out.length - 1] += '\n' + b;
+        continue;
+      }
+      out.push(b);
+      continue;
+    }
+    // 有时间但没标签的块，紧跟在「只有标签」的块后面时并上去
+    if (hasTime(b) && !hasLabel(b) && out.length && hasLabel(out[out.length - 1]) && !hasTime(out[out.length - 1])) {
+      out[out.length - 1] += '\n' + b;
+      continue;
+    }
+    out.push(b);
+  }
+  return out;
 }
 
 /* 一个块 = 一条家长文案 */
@@ -842,6 +931,31 @@ function parseBlock(block, ctx) {
     return { records, skipped };
   }
 
+  // 没有「请假学生：」→ 先试自我介绍（我是某某家长），名册里能对上才用
+  const intro = nameFromIntro(block, ctx);
+  if (intro) {
+    const joinedIntro = withWeekdayDates(
+      String(hints.masked || block)
+        .split(/\n+/)
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .join('，'),
+      ctx.week
+    );
+    const rec0 = parseOne(joinedIntro, ctx);
+    if (rec0 && rec0.startAt) {
+      const st0 = ctx.byName.get(intro);
+      rec0.name = intro;
+      rec0.rawName = intro;
+      rec0.confidence = { ...rec0.confidence, name: 'exact' };
+      if (st0) {
+        rec0.dorm = rec0.dorm || st0.dorm || '';
+        rec0.group = rec0.group || st0.group || '';
+      }
+      return { records: [rec0], skipped };
+    }
+  }
+
   // 没有标签 → 退回逐行解析（老师手写的「姓名 宿舍 时间」清单）
   const segments = [];
   for (const line of String(hints.masked || '')
@@ -911,12 +1025,57 @@ function mergeDuplicates(records) {
   return out;
 }
 
+/* 实在认不出来的块：不丢弃，生成一条「待补」记录。
+   姓名/时间留空，原文整段塞进 timeRaw 和 note —— 老师在预览里能直接补，不会白粘贴一遍。 */
+function salvage(block, ctx) {
+  const text = String(block || '').trim();
+  if (!text) return null;
+  const hints = extractHints(text);
+  const flat = text.replace(/\s+/g, ' ').trim();
+  // 尽量把能捡的都捡出来
+  const cand = hints.student || nameFromIntro(text, ctx) || '';
+  const nm = cand && ctx.byName.has(cand) ? cand : (ctx.byName.has(cand) ? cand : '');
+  const guess = nm || findName(extractHints(text).masked, ctx).name || '';
+  const finalName = ctx.byName.has(guess) ? guess : '';
+  const st = finalName ? ctx.byName.get(finalName) || null : null;
+  const dorm = (DORM_RE.exec(text) || [''])[0] || (st && st.dorm) || '';
+  const group = normalizeGroup(text) || (st && st.group) || '';
+  const tm = parseTimeRange(text, parseWeekDate(ctx.week && ctx.week.saturday) || { y: 2026, m: 8, d: 15 });
+  const ph = LABEL_PHONE.exec(text);
+  const pa = LABEL_PARENT.exec(text);
+  return {
+    name: finalName,
+    rawName: finalName || guess,
+    group,
+    dorm: String(dorm).toUpperCase().slice(0, 8),
+    phone: ph ? ph[1] : '',
+    contact: pa ? (pa[1] || pa[2] || pa[3] || '') : '',
+    startAt: tm.start || null,
+    endAt: tm.end || null,
+    timeRaw: tm.start ? '' : flat.slice(0, 80),
+    reason: '',
+    category: tm.start ? categoryOf(tm.start, ctx.week) : 'other',
+    confidence: { name: finalName ? 'exact' : 'none', time: tm.start ? 'partial' : 'none' },
+    warnings: ['这段没能完整识别，请补填姓名或时间'],
+    raw: flat,
+    salvaged: true,
+  };
+}
+
 export function parseText(text, ctx) {
   const blocks = splitBlocks(text);
   const records = [];
   const skipped = [];
   for (const block of blocks) {
     const r = parseBlock(block, ctx);
+    if (!r.records.length && r.skipped.length) {
+      // 这一块什么都没认出来 → 兜底成「待补」记录
+      const salv = salvage(r.skipped.join('\n'), ctx);
+      const trusted = salv && ((salv.name && ctx.byName.has(salv.name)) || salv.startAt || salv.dorm || salv.group);
+      if (trusted) records.push(salv);
+      else skipped.push(...r.skipped);
+      continue;
+    }
     records.push(...r.records);
     skipped.push(...r.skipped);
   }
