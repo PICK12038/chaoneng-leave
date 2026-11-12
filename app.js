@@ -670,7 +670,7 @@ function renderPreview() {
     const incomplete = !p.name || !p.startAt;
     const tag =
       (far ? '<span class="preview-tag pt-far">不在本周</span>' : '') +
-      (incomplete ? '<span class="preview-tag pt-warn">待补</span>' : '') +
+      (incomplete ? '<span class="preview-tag pt-warn" title="' + (!p.name ? '缺姓名' : '') + (!p.name && !p.startAt ? '、' : '') + (!p.startAt ? '缺时间' : '') + '">待补' + (!p.name ? '姓名' : '') + (!p.name && !p.startAt ? '·' : '') + (!p.startAt ? '时间' : '') + '</span>' : '') +
       (unsure ? '<span class="preview-tag pt-warn">时间待确认</span>' : '') +
       (dup
         ? '<span class="preview-tag pt-dup">重复</span>'
