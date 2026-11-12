@@ -422,7 +422,7 @@ function renderWeekShell() {
       </div>
       <button class="wkb-nav" data-action="nextWeek" title="下一周" aria-label="下一周"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
       ${isThisWeek ? '' : `<button class="btn sm wkb-back" data-action="thisWeek">回到本周</button>`}
-      <span class="hb-meta">截止 ${md(w.saturday)} ${w.cutoff || '21:30'} · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校</span>
+      <span class="hb-meta" title="截止 ${md(w.saturday)} ${w.cutoff || '21:30'} · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校">截止 ${md(w.saturday)} ${w.cutoff || '21:30'} · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校</span>
       <span class="hb-grow"></span>
       <div class="hb-stats">
         <button class="hs ${state.filter === 'all' ? 'on' : ''}" data-action="filter" data-filter="all" title="全部请假"><b>${total}</b><span>请假</span></button>
