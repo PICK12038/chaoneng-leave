@@ -485,6 +485,11 @@ textarea.paste-area { min-height: 210px; font-size: 13.5px; line-height: 1.85; }
 .tip b { color: var(--ink); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
 
+/* 1600 以下空间不够时先收起中间那行小字，保住「一行窄条」 */
+@media (max-width: 1520px) {
+  .hb-meta { display: none; }
+}
+
 /* ============ 响应式 ============ */
 @media (max-width: 1080px) {
 }
