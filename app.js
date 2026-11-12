@@ -13,6 +13,11 @@ import {
   levenshtein,
   decodeCutoff,
   encodeCutoff,
+  isWeekOverride,
+  isDefaultCutoff,
+  cutoffText,
+  DEFAULT_SUN_START,
+  DEFAULT_SUN_END,
   DEFAULT_CUTOFF,
 } from './parser.js';
 
@@ -425,7 +430,7 @@ function renderWeekShell() {
       </div>
       <button class="wkb-nav" data-action="nextWeek" title="下一周" aria-label="下一周"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
       ${isThisWeek ? '' : `<button class="btn sm wkb-back" data-action="thisWeek">回到本周</button>`}
-      <span class="hb-meta" title="提前请假截止 ${md(w.saturday)} ${cutText(w)} · ${sunText(w)}起算周日 · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校">提前截止 ${md(w.saturday)} ${cutText(w)} · ${sunText(w)}起算周日 · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校</span>
+      <span class="hb-meta" title="${ruleText()} · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校">${ruleText()} · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校</span>
       <span class="hb-grow"></span>
       <div class="hb-stats">
         <button class="hs ${state.filter === 'all' ? 'on' : ''}" data-action="filter" data-filter="all" title="全部请假"><b>${total}</b><span>请假</span></button>
@@ -461,6 +466,7 @@ function renderWeekShell() {
       ${seg('time', '按时间')}
       ${seg('dorm', '按宿舍')}
     </div>
+    <button class="btn sm${weekRule().own ? ' rule-on' : ''}" data-action="weekRule" title="${ruleText()}——点这里单独调本周的时间规则（调休周很常用）">时间规则${weekRule().own ? ' •' : ''}</button>
     <button class="btn sm" data-action="copySummary" title="按周末整理成一段文字，方便发群或打印">复制汇总</button>
   </div>
 
@@ -716,19 +722,30 @@ function renderPreview() {
   </div>`;
 }
 
-/* 顶部窄条用的两个分界文案 */
-function cutText(w) {
-  return decodeCutoff((w && w.cutoff) || state.settings.cutoff).cutoff;
+/* 本周实际生效的时间规则：周次自己设过就用它，否则跟随全局设置 */
+function weekRule() {
+  const own = state.week && state.week.cutoff;
+  if (isWeekOverride(own)) return { raw: own, own: true, ...decodeCutoff(own) };
+  const g = state.settings.cutoff || DEFAULT_CUTOFF;
+  return { raw: g, own: false, ...decodeCutoff(g) };
 }
-function sunText(w) {
-  const v = decodeCutoff((w && w.cutoff) || state.settings.cutoff).sunStart;
-  return v === '00:00' ? '次日 00:00' : `次日 ${v}`;
+
+/* 一句话说明当前规则 */
+function ruleText() {
+  const r = weekRule();
+  const endPart = r.sunEnd !== DEFAULT_SUN_END ? ' · ' + r.sunEnd + ' 后算其他' : '';
+  const tail = r.own ? '（本周单独设）' : '';
+  return '提前截止 ' + r.cutoff + ' · 周日 ' + r.sunStart + ' 起' + endPart + tail;
 }
 
 function weekCtx() {
-  const raw = (state.week && state.week.cutoff) || state.settings.cutoff || DEFAULT_CUTOFF;
-  const { cutoff, sunStart } = decodeCutoff(raw);
-  return { saturday: state.week ? state.week.saturday : '', cutoff, sunStart };
+  const r = weekRule();
+  return {
+    saturday: state.week ? state.week.saturday : '',
+    cutoff: r.cutoff,
+    sunStart: r.sunStart,
+    sunEnd: r.sunEnd,
+  };
 }
 
 function isoOfDate(d) {
@@ -1161,6 +1178,8 @@ function renderSettings() {
         <input type="time" id="setCutoff" value="${esc(decodeCutoff(s.cutoff).cutoff)}"></div>
       <div class="field"><label>周日从几点开始算<span class="sub">周六截止后到第二天这个时间走，仍算周六；之后再算周日</span></label>
         <input type="time" id="setSunStart" value="${esc(decodeCutoff(s.cutoff).sunStart)}"></div>
+      <div class="field"><label>周日到几点算结束<span class="sub">默认 23:59；调休周想早收工时可改成 18:00</span></label>
+        <input type="time" id="setSunEnd" value="${esc(decodeCutoff(s.cutoff).sunEnd)}"></div>
       <button class="btn primary" data-action="saveSettings">保存设置</button>
     </div></div>
 
@@ -1650,6 +1669,15 @@ document.addEventListener('click', async (e) => {
       case 'saveSettings':
         await saveSettings();
         break;
+      case 'weekRule':
+        openWeekRule();
+        break;
+      case 'weekRuleSave':
+        await saveWeekRule(false);
+        break;
+      case 'weekRuleReset':
+        await saveWeekRule(true);
+        break;
       case 'saveMe': {
         const val = ($('#askName') || $('#setMe') || {}).value;
         const name = String(val || '').trim();
@@ -2071,8 +2099,55 @@ async function deleteStudent(name) {
   toast('已删除', 'ok');
 }
 
+/* 给「这一周」单独设时间规则（调休周：周六照常放假但周日提前收工） */
+function openWeekRule() {
+  const w = state.week;
+  if (!w) return;
+  const own = isWeekOverride(w.cutoff);
+  const cur = decodeCutoff(w.cutoff);
+  const g = decodeCutoff(state.settings.cutoff);
+  const note = own ? '本周用了自己的规则' : '本周跟随全局设置';
+  const body = [
+    `<div class="tip"><span>📅</span><div><b>${esc(md(w.saturday))} ${esc(wd(w.saturday))}</b> 这一周 · ${esc(note)}<br>
+      调休、考试周、临时提前收假都可以在这里单独调，不影响其它周次。</div></div>`,
+    `<div class="field"><label>提前请假截止<span class="sub">周六这个时间之前走 = 提前请假</span></label>`,
+    `<input type="time" id="wrCutoff" value="${esc(cur.cutoff)}"></div>`,
+    `<div class="field"><label>周日从几点开始算<span class="sub">之前仍算周六</span></label>`,
+    `<input type="time" id="wrSunStart" value="${esc(cur.sunStart)}"></div>`,
+    `<div class="field"><label>周日到几点算结束<span class="sub">之后算「其他」</span></label>`,
+    `<input type="time" id="wrSunEnd" value="${esc(cur.sunEnd)}"></div>`,
+    `<div class="hint">全局设置：提前截止 ${esc(g.cutoff)} · 周日 ${esc(g.sunStart)} 起 · ${esc(g.sunEnd)} 止</div>`,
+  ].join('');
+
+  openModal({
+    title: "这一周的时间规则",
+    body,
+    foot: [
+      `<button class="btn ghost" data-action="closeModal">取消</button>`,
+      own ? `<button class="btn" data-action="weekRuleReset">恢复跟随全局</button>` : '',
+      `<span class="spacer"></span>`,
+      `<button class="btn primary" data-action="weekRuleSave">保存到本周</button>`,
+    ].join(''),
+  });
+}
+
+async function saveWeekRule(clear) {
+  const id = state.week && state.week.saturday;
+  if (!id) return;
+  const payload = clear
+    ? { cutoff: '' }
+    : { cutoff: encodeCutoff($('#wrCutoff').value, $('#wrSunStart').value, $('#wrSunEnd').value) };
+  const data = await send(`/api/week-rule/${encodeURIComponent(id)}`, 'PUT', payload);
+  state.revision = data.revision;
+  state.week = data.week;
+  if (data.weeks) state.weeks = data.weeks;
+  closeModal();
+  render();
+  toast(clear ? '本周已恢复跟随全局设置' : '本周规则已保存，分类已重算', 'ok');
+}
+
 async function saveSettings() {
-  const payload = { org: $('#setOrg').value.trim(), cutoff: encodeCutoff($('#setCutoff').value, $('#setSunStart').value) };
+  const payload = { org: $('#setOrg').value.trim(), cutoff: encodeCutoff($('#setCutoff').value, $('#setSunStart').value, $('#setSunEnd').value) };
   const data = await send('/api/settings', 'PUT', payload);
   state.revision = data.revision;
   state.settings = data.settings;
