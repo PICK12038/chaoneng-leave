@@ -217,6 +217,10 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .hb-prog .ck-rest { color: rgba(255,255,255,.5); }
 .hb-pl { font-family: var(--mono); }
 
+/* 本周单独设过时间规则时，按钮上带一个小圆点 */
+.rule-on { position: relative; border-color: #c7b8ff !important; color: #4b3fd4 !important; background: #f3f0ff !important; }
+.rule-on::after { content: ""; position: absolute; top: 4px; right: 4px; width: 5px; height: 5px; border-radius: 50%; background: #6d5ef0; }
+
 /* ============ 表格：更紧凑，字号更大 ============ */
 .table-wrap {
   background: var(--panel); border: 1px solid var(--line);
