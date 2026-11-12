@@ -414,35 +414,29 @@ function renderWeekShell() {
   const range = `${md(w.saturday)} – ${md(isoOfDate(sun))}`;
   return `
   <section class="hero">
-    <div class="hero-main">
-      <div class="hero-kicker">Weekend Leave · 周末请假</div>
-      <div class="hero-weekbar">
-        <button class="wkb-nav" data-action="prevWeek" title="上一周" aria-label="上一周"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
-        <div class="wkb-mid">
-          <div class="wkb-title">第 ${wkNo} 周${isThisWeek ? '<span class="wkb-now">本周</span>' : ''}</div>
-          <div class="wkb-range">${range}</div>
-        </div>
-        <button class="wkb-nav" data-action="nextWeek" title="下一周" aria-label="下一周"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
-        ${isThisWeek ? '' : `<button class="btn sm wkb-back" data-action="thisWeek">回到本周</button>`}
+    <div class="hero-bar">
+      <button class="wkb-nav" data-action="prevWeek" title="上一周" aria-label="上一周"><svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></button>
+      <div class="wkb-mid">
+        <div class="wkb-title">第 ${wkNo} 周${isThisWeek ? '<span class="wkb-now">本周</span>' : ''}</div>
+        <div class="wkb-range">${range}</div>
       </div>
-      <div class="hero-meta">截止 ${md(w.saturday)} ${w.cutoff || '21:30'} · 覆盖 ${groups} 个班组 · ${onLeave} 人请假 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校</div>
-    </div>
-    <div class="hero-stats">
-      <div class="hs"><b>${total}</b><span>请假总数</span></div>
-      <div class="hs early"><b>${counts.early}</b><span>提前请假</span></div>
-      <div class="hs sat"><b>${counts.sat}</b><span>周六</span></div>
-      <div class="hs sun"><b>${counts.sun}</b><span>周日</span></div>
-    </div>
-    <div class="hero-progress">
-      <span>假条已发 ${sent} / ${total || 0}</span>
-      <div class="bar"><i style="width:${pct}%"></i></div>
-      <span>已写 ${written}</span>
-    </div>
-    <div class="hero-progress hero-check">
-      <span class="ck-dot paper"></span><span>有实物 ${paper}</span>
-      <div class="bar check"><i style="width:${pctChecked}%"></i></div>
-      <span class="ck-dot left"></span><span>已走 ${left}</span>
-      <span class="ck-rest">未核对 ${Math.max(0, total - paper - left)}</span>
+      <button class="wkb-nav" data-action="nextWeek" title="下一周" aria-label="下一周"><svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
+      ${isThisWeek ? '' : `<button class="btn sm wkb-back" data-action="thisWeek">回到本周</button>`}
+      <span class="hb-meta">截止 ${md(w.saturday)} ${w.cutoff || '21:30'} · 覆盖 ${groups} 个班组 · 其余 ${Math.max(0, state.students.length - onLeave)} 人在校</span>
+      <span class="hb-grow"></span>
+      <div class="hb-stats">
+        <button class="hs ${state.filter === 'all' ? 'on' : ''}" data-action="filter" data-filter="all" title="全部请假"><b>${total}</b><span>请假</span></button>
+        <button class="hs early ${state.filter === 'early' ? 'on' : ''}" data-action="filter" data-filter="early" title="提前请假"><b>${counts.early}</b><span>提前</span></button>
+        <button class="hs sat ${state.filter === 'sat' ? 'on' : ''}" data-action="filter" data-filter="sat" title="周六"><b>${counts.sat}</b><span>周六</span></button>
+        <button class="hs sun ${state.filter === 'sun' ? 'on' : ''}" data-action="filter" data-filter="sun" title="周日"><b>${counts.sun}</b><span>周日</span></button>
+      </div>
+      <div class="hb-prog" title="假条已发 ${sent} / ${total || 0}，已写 ${written}；核对：有实物 ${paper}、已走 ${left}、未核对 ${Math.max(0, total - paper - left)}">
+        <span class="hb-pl">假条 ${sent}/${total || 0}</span>
+        <div class="bar"><i style="width:${pct}%"></i></div>
+        <span class="ck-dot paper"></span>${paper}
+        <span class="ck-dot left"></span>${left}
+        <span class="ck-rest">未核 ${Math.max(0, total - paper - left)}</span>
+      </div>
     </div>
   </section>
 
@@ -459,12 +453,12 @@ function renderWeekShell() {
       ${chip('other', '其他', counts.other)}
     </div>
     <span class="spacer"></span>
-    <button class="btn sm" data-action="copySummary" title="按周末整理成一段文字，方便发群或打印">复制汇总</button>
     <div class="segment">
       ${seg('group', '按班组')}
       ${seg('time', '按时间')}
       ${seg('dorm', '按宿舍')}
     </div>
+    <button class="btn sm" data-action="copySummary" title="按周末整理成一段文字，方便发群或打印">复制汇总</button>
   </div>
 
   <div class="table-wrap"><div class="table-scroll" id="tableHost"></div></div>
@@ -501,7 +495,9 @@ function rowHtml(r) {
   const sel = state.selected.has(r.id);
   const slip = r.slip || {};
   const missing = !state.students.some((s) => s.name === r.name);
-  return `<tr class="row chk-${r.check || 'none'}" data-action="openRecord" data-id="${r.id}">
+  const chk = r.check || '';
+  const chkTip = `核对：${CHECK_LABEL[chk]}（点一下切换 有实物→已走→取消）`;
+  return `<tr class="row chk-${chk || 'none'}" data-action="openRecord" data-id="${r.id}">
     <td class="col-check"><input type="checkbox" data-check="${r.id}" ${sel ? 'checked' : ''}></td>
     <td>
       <div class="person">
@@ -516,15 +512,11 @@ function rowHtml(r) {
     <td class="hide-sm"><span class="badge b-${r.category}">${CATEGORY_LABEL[r.category] || '其他'}</span></td>
     <td class="tcell-time">${timeCell(r)}</td>
     <td class="reason hide-sm">${esc(r.reason || '—')}</td>
-    <td>
-      <div class="slip">
-        <button data-action="slip" data-id="${r.id}" data-field="written" class="${slip.written ? 'on' : ''}" title="假条已写">写</button>
-        <button data-action="slip" data-id="${r.id}" data-field="sent" class="${slip.sent ? 'on sent' : ''}" title="假条已发">发</button>
-      </div>
-    </td>
-    <td>
-      <div>
-        <button class="chk ${r.check || 'none'}" data-action="chk" data-id="${r.id}" title="点一下切换：有实物（黄）→ 学生已走（蓝）→ 取消">${CHECK_LABEL[r.check || '']}</button>
+    <td class="col-mini">
+      <div class="mini-acts">
+        <button class="mini ${slip.written ? 'on' : ''}" data-action="slip" data-id="${r.id}" data-field="written" title="假条已写（${slip.written ? '已写' : '未写'}，点一下切换）" aria-label="假条已写">${slip.written ? '✎' : '·'}</button>
+        <button class="mini ${slip.sent ? 'on sent' : ''}" data-action="slip" data-id="${r.id}" data-field="sent" title="假条已发（${slip.sent ? '已发' : '未发'}，点一下切换）" aria-label="假条已发">${slip.sent ? '✓' : '·'}</button>
+        <button class="mini-chk ${chk || 'none'}" data-action="chk" data-id="${r.id}" title="${chkTip}" aria-label="${chkTip}"></button>
       </div>
     </td>
   </tr>`;
@@ -548,7 +540,7 @@ function renderWeekTable() {
       const g = r.group || '未分组';
       if (g !== lastGroup) {
         const n = list.filter((x) => (x.group || '未分组') === g).length;
-        rows += `<tr class="group-row"><td colspan="8">${esc(g)}<span class="gcount">${n} 人</span></td></tr>`;
+        rows += `<tr class="group-row"><td colspan="6">${esc(g)}<span class="gcount">${n} 人</span></td></tr>`;
         lastGroup = g;
       }
       rows += rowHtml(r);
@@ -560,7 +552,7 @@ function renderWeekTable() {
   host.innerHTML = `<table class="data">
     <thead><tr>
       <th class="col-check"><input type="checkbox" id="checkAll" ${list.every((r) => state.selected.has(r.id)) && list.length ? 'checked' : ''}></th>
-      <th>学生</th><th class="hide-sm">宿舍</th><th class="hide-sm">分类</th><th>请假时间</th><th class="hide-sm">原因 / 备注</th><th>假条</th><th>核对</th>
+      <th>学生</th><th class="hide-sm">宿舍</th><th class="hide-sm">分类</th><th>请假时间</th><th class="hide-sm">原因 / 备注</th><th class="col-mini" title="假条（✎已写 / ✓已发）与核对（黄=有实物，蓝=已走）">假条 · 核对</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
