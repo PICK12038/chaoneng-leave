@@ -83,14 +83,6 @@
         }
         return { added: added.length, duplicates: [], week: w, revision: 0 };
       }
-      if (p.startsWith('/api/records/')) {
-        const [, , , wid, rid] = p.split('/');
-        const w = findWeek(decodeURIComponent(wid));
-        const i = w.records.findIndex((r) => r.id === decodeURIComponent(rid));
-        if (i >= 0 && method === 'PATCH') w.records[i] = { ...w.records[i], ...body, updatedAt: new Date().toISOString() };
-        if (i >= 0 && method === 'DELETE') w.records.splice(i, 1);
-        return { ok: true, week: w, revision: 0 };
-      }
       if (p === '/api/records/bulk' && method === 'POST') {
         const w = findWeek(body.week);
         const set = new Set(body.ids || []);
@@ -101,6 +93,15 @@
             if (body.field === 'check') r.check = body.value || '';
             else if (body.field === 'written' || body.field === 'sent') r.slip[body.field] = !!body.value;
           });
+        return { ok: true, week: w, revision: 0 };
+      }
+      // 单条 PATCH / DELETE 放在 bulk 之后判断，否则 /api/records/bulk 会被误当成周 id
+      if (p.startsWith('/api/records/')) {
+        const [, , , wid, rid] = p.split('/');
+        const w = findWeek(decodeURIComponent(wid));
+        const i = w.records.findIndex((r) => r.id === decodeURIComponent(rid));
+        if (i >= 0 && method === 'PATCH') w.records[i] = { ...w.records[i], ...body, updatedAt: new Date().toISOString() };
+        if (i >= 0 && method === 'DELETE') w.records.splice(i, 1);
         return { ok: true, week: w, revision: 0 };
       }
       if (p === '/api/students' && method === 'POST') return studentsBulk({ students: [body], create: true });
