@@ -663,11 +663,14 @@ function renderPreview() {
   const rosterNames = new Set(state.students.map((s) => s.name));
   const rows = state.preview.map((p, i) => {
     const dup = existing.has(`${p.name}|${p.startAt || ''}`);
-    const known = rosterNames.has(p.name);
+    // 没识别到姓名的行不算「名册外」
+    const known = !p.name || rosterNames.has(p.name);
     const far = (p.warnings || []).some((w) => w.includes('不在本周'));
     const unsure = (p.warnings || []).some((w) => w.includes('推断'));
+    const incomplete = !p.name || !p.startAt;
     const tag =
       (far ? '<span class="preview-tag pt-far">不在本周</span>' : '') +
+      (incomplete ? '<span class="preview-tag pt-warn">待补</span>' : '') +
       (unsure ? '<span class="preview-tag pt-warn">时间待确认</span>' : '') +
       (dup
         ? '<span class="preview-tag pt-dup">重复</span>'
@@ -697,7 +700,7 @@ function renderPreview() {
     </tr>`;
   });
 
-  const usable = state.preview.filter((p) => p.include && p.name && p.startAt).length;
+  const usable = state.preview.filter((p) => p.include && (p.name || p.startAt)).length;
 
   const firstAt = (state.preview.find((p) => p.startAt) || {}).startAt || '';
   const target = weekendOfRecord(firstAt);
@@ -824,12 +827,15 @@ function doParse() {
   state.preview = out.records.map((r, i) => ({
     ...r,
     key: `p${i}`,
-    include: !!r.name && !!r.startAt,
+    // 只要有一项可信信息就默认带上，缺的那项老师可以在下面补
+    include: !!(r.name || r.startAt || r.dorm || r.group),
     timeText: r.startAt ? timeTextOf(r) : r.timeRaw || '',
   }));
   state.skipped = out.skipped;
   const s = $('#parseSummary');
-  if (s) s.textContent = `识别 ${out.records.length} 条，跳过 ${out.skipped.length} 行`;
+  const incompleteN = out.records.filter((r) => !r.name || !r.startAt).length;
+  if (s)
+    s.textContent = `识别 ${out.records.length} 条${incompleteN ? `（其中 ${incompleteN} 条待补姓名或时间）` : ''}，跳过 ${out.skipped.length} 行`;
   renderPreview();
   if (out.records.length) toast(`识别出 ${out.records.length} 条`, 'ok');
   else toast('没识别出内容，看看下面的未识别部分', 'err');
