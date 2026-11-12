@@ -37,6 +37,28 @@
       ],
       weeks: [{ id: '2026-10-24', saturday: '2026-10-24', cutoff: '21:30', note: '', records: [] }],
     };
+    // 演示模式里的分类计算（和线上同一个规则）
+    const mockCatOf = (startAt, sat, rawCut) => {
+      if (!startAt) return 'sat';
+      const [a, b] = String(rawCut || '21:30').split('|');
+      const ok = (v) => /^\d{1,2}:\d{2}$/.test(String(v || '').trim());
+      const pad = (v, d) => {
+        if (!ok(v)) return d;
+        const [h, m] = String(v).trim().split(':');
+        return String(Math.min(23, Number(h))).padStart(2, '0') + ':' + String(Math.min(59, Number(m))).padStart(2, '0');
+      };
+      const cutoff = pad(a, '21:30');
+      const sunStart = pad(b, '00:00');
+      const s0 = String(startAt).replace(' ', 'T').slice(0, 16);
+      const d = new Date(sat + 'T12:00:00');
+      d.setDate(d.getDate() + 1);
+      const sun = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      if (s0 < sat + 'T' + cutoff) return 'early';
+      if (s0 < sun + 'T' + sunStart) return 'sat';
+      if (s0 <= sun + 'T23:59') return 'sun';
+      return 'other';
+    };
+
     M.weeks[0].records.push({
       id: 'mock-1', name: '鄢艺菲', rawName: '鄢艺菲', group: '超能一3组', dorm: 'A616',
       startAt: '2026-10-18T13:00', endAt: '2026-10-18T20:00', timeRaw: '10月18日13时00分至10月18日20时00分',
@@ -112,7 +134,7 @@
       }
       if (p === '/api/weeks' && method === 'POST') {
         const sat = body.saturday;
-        if (!findWeek(sat)) M.weeks.push({ id: sat, saturday: sat, cutoff: '21:30', note: '', records: [] });
+        if (!findWeek(sat)) M.weeks.push({ id: sat, saturday: sat, cutoff: M.settings.cutoff, note: '', records: [] });
         return { ok: true, week: findWeek(sat), weeks: meta(), revision: 0 };
       }
       if (p.startsWith('/api/weeks/') && method === 'DELETE') {
@@ -122,6 +144,12 @@
       }
       if (p === '/api/settings' && method === 'PUT') {
         Object.assign(M.settings, { org: body.org, cutoff: body.cutoff });
+        M.weeks.forEach((w) => {
+          w.cutoff = body.cutoff;
+          w.records.forEach((r) => {
+            if (r.startAt) r.category = mockCatOf(r.startAt, w.saturday, body.cutoff);
+          });
+        });
         return { ok: true, settings: M.settings, revision: 0 };
       }
       if (p === '/api/login') return { ok: true };
@@ -234,7 +262,7 @@
     phone: r.phone || '',
   });
 
-  const toRecord = (r) => ({
+  const toRecord = (r, weekCutoff) => ({
     id: r.id,
     name: r.name,
     rawName: r.raw_name || r.name,
@@ -248,7 +276,7 @@
     phone: r.phone || '',
     contact: r.contact || '',
     check: r.check_state || '',
-    category: r.cat || 'sat',
+    category: r.start_at ? catOfWeek(shortTime(r.start_at), r.week_id, weekCutoff) : r.cat || 'sat',
     slip: { written: !!r.written, sent: !!r.sent },
     by: r.by_name || '',
     createdAt: shortTime(r.created_at),
@@ -256,18 +284,30 @@
   });
 
   /* 分类以「开始时间」为准：周六 21:30 前=提前请假，周六当天=周六，次日(周日)=周日 */
-  const catOfWeek = (startAt, weekId, cutoff) => {
+  /* cutoff 里可能带 `|`，形如 "21:30|06:00"：前者是提前请假截止，后者是周日开始算的时间 */
+  const splitCut = (raw) => {
+    const [a, b] = String(raw == null ? '' : raw).split('|');
+    const ok = (v) => /^\d{1,2}:\d{2}$/.test(String(v || '').trim());
+    const norm = (v, d) => {
+      if (!ok(v)) return d;
+      const [h, m] = String(v).trim().split(':');
+      return String(Math.min(23, Number(h))).padStart(2, '0') + ':' + String(Math.min(59, Number(m))).padStart(2, '0');
+    };
+    return { cutoff: norm(a, '21:30'), sunStart: norm(b, '00:00') };
+  };
+
+  const catOfWeek = (startAt, weekId, rawCutoff) => {
     if (!startAt) return 'sat';
+    const { cutoff, sunStart } = splitCut(rawCutoff);
     const s = String(startAt).replace(' ', 'T').slice(0, 16);
     const sat = String(weekId || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(sat)) return 'sat';
-    const cut = `${sat}T${cutoff || '21:30'}`;
-    if (s < cut) return 'early';
+    if (s < `${sat}T${cutoff}`) return 'early';
     const d = new Date(`${sat}T12:00:00`);
     d.setDate(d.getDate() + 1);
     const sunday = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    if (s >= `${sunday}T00:00` && s <= `${sunday}T23:59`) return 'sun';
-    if (s < `${sunday}T00:00`) return 'sat';
+    if (s < `${sunday}T${sunStart}`) return 'sat';
+    if (s <= `${sunday}T23:59`) return 'sun';
     return 'other';
   };
 
@@ -301,13 +341,15 @@
     const weeks = await pg('weeks?select=*&order=saturday.desc');
     if (!weeks || !weeks.length) return [];
     const ids = weeks.map((w) => w.id);
-    const rows = await pg(`records?select=week_id,cat,check_state,written,sent&week_id=in.(${ids.map(enc).join(',')})`);
+    const rows = await pg(`records?select=week_id,start_at,cat,check_state,written,sent&week_id=in.(${ids.map(enc).join(',')})`);
+    const cutByWeek = new Map(weeks.map((w) => [w.id, w.cutoff || '21:30']));
     const byWeek = new Map();
     for (const r of rows || []) {
       if (!byWeek.has(r.week_id)) byWeek.set(r.week_id, { total: 0, early: 0, sat: 0, sun: 0, other: 0, written: 0, sent: 0, paper: 0, left: 0 });
       const w = byWeek.get(r.week_id);
+      const cat = r.start_at ? catOfWeek(shortTime(r.start_at), r.week_id, cutByWeek.get(r.week_id)) : r.cat || 'sat';
       w.total++;
-      if (w[r.cat] !== undefined) w[r.cat]++;
+      if (w[cat] !== undefined) w[cat]++;
       if (r.written) w.written++;
       if (r.sent) w.sent++;
       if (r.check_state === 'paper') w.paper++;
@@ -366,13 +408,16 @@
         saturday: String(w.saturday),
         cutoff: w.cutoff || '21:30',
         note: w.note || '',
-        records: (recs || []).map(toRecord),
+        records: (recs || []).map((r) => toRecord(r, w.cutoff)),
       },
     };
   }
 
   async function addRecords({ week, records }) {
-    const rows = (records || []).map((r) => toRecordRow(r, week));
+    // 本周的截止口径要传进 toRecordRow，否则会用默认 21:30 算错分类
+    const wk = (await pg(`weeks?select=cutoff&id=eq.${enc(week)}`)) || [];
+    const cut = (wk[0] && wk[0].cutoff) || '21:30';
+    const rows = (records || []).map((r) => toRecordRow({ ...r, cutoff: cut }, week));
     if (!rows.length) return { added: 0, duplicates: [], week: (await weekData(week)).week, revision: await revision() };
 
     const exist = await pg(`records?select=name,start_at&week_id=eq.${enc(week)}`);
@@ -478,7 +523,34 @@
     if (p === '/api/log') return { log: (await bootstrap()).log };
     if (p === '/api/settings' && method === 'PUT') {
       await pg('settings?id=eq.1', { method: 'PATCH', body: { org: body.org, cutoff: body.cutoff, updated_at: new Date().toISOString() }, prefer: 'return=minimal' });
-      return { ok: true, settings: body, revision: await revision() };
+      // 截止时间变了 → 已有记录的分类要跟着重算，否则统计口径会前后不一致
+      let recat = 0;
+      try {
+        const weeks = await pg('weeks?select=id,cutoff');
+        const cutByWeek = new Map((weeks || []).map((w) => [w.id, body.cutoff]));
+        for (const w of weeks || []) {
+          await pg(`weeks?id=eq.${enc(w.id)}`, { method: 'PATCH', body: { cutoff: body.cutoff }, prefer: 'return=minimal' }).catch(() => null);
+        }
+        const ids = (weeks || []).map((w) => w.id);
+        if (ids.length) {
+          const rows = await pg(`records?select=id,week_id,start_at,cat&week_id=in.(${ids.map(enc).join(',')})`);
+          const groups = new Map();
+          for (const r of rows || []) {
+            if (!r.start_at) continue;
+            const want = catOfWeek(shortTime(r.start_at), r.week_id, cutByWeek.get(r.week_id));
+            if (want === r.cat) continue;
+            if (!groups.has(want)) groups.set(want, []);
+            groups.get(want).push(r.id);
+          }
+          for (const [cat, list] of groups) {
+            await pg(`records?id=in.(${list.map(enc).join(',')})`, { method: 'PATCH', body: { cat }, prefer: 'return=minimal' });
+            recat += list.length;
+          }
+        }
+      } catch (e) {
+        console.warn('[cloud] 重算分类失败：', e.message);
+      }
+      return { ok: true, settings: body, recategorized: recat, revision: await revision() };
     }
     if (p.startsWith('/api/week/')) return weekData(decodeURIComponent(p.slice('/api/week/'.length)));
     if (p === '/api/records' && method === 'POST') return addRecords(body);
@@ -504,7 +576,9 @@
       const sat = body.saturday || '';
       const exists = await pg(`weeks?select=*&id=eq.${enc(sat)}`);
       if (!exists || !exists.length) {
-        await pg('weeks', { method: 'POST', body: [{ id: sat, saturday: sat, cutoff: '21:30', note: '' }], prefer: 'return=minimal' });
+        const cur = await pg('settings?select=cutoff&id=eq.1');
+        const cut = (cur && cur[0] && cur[0].cutoff) || '21:30';
+        await pg('weeks', { method: 'POST', body: [{ id: sat, saturday: sat, cutoff: cut, note: '' }], prefer: 'return=minimal' });
       }
       const list = await weekMeta();
       return { ok: true, week: list.find((w) => w.id === sat) || null, weeks: list, revision: await revision() };
