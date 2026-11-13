@@ -20,6 +20,7 @@ import {
   DEFAULT_SUN_END,
   DEFAULT_CUTOFF,
 } from './parser.js';
+import { recognizeTableImage } from './table-ocr.js';
 
 /* ================================================================== */
 /* 基础工具                                                            */
@@ -69,6 +70,7 @@ const state = {
   })(),
   revision: -1,
   settings: { org: '周六超能班', cutoff: '21:30', sunStart: '00:00' },
+  imgPreview: null,
   students: [],
   weeks: [],
   week: null,
@@ -328,6 +330,7 @@ function render() {
     case 'students':
       view.innerHTML = renderStudents();
       renderRosterPreview();
+      renderImgPreview();
       renderStudentTable();
       break;
     case 'settings':
@@ -351,6 +354,7 @@ function render() {
 /* ================================================================== */
 /* 本周名单                                                            */
 /* ================================================================== */
+window.__renderApp = render;
 
 function recordKey(r) {
   return `${r.name}|${r.startAt || ''}`;
@@ -933,6 +937,8 @@ function renderStudents() {
       </div>
       <span class="spacer"></span>
       <button class="btn sm" data-action="rosterSample">填入示例</button>
+      <button class="btn sm" data-action="imgPick">🖼️ 识别分班表截图</button>
+      <input type="file" id="imgFile" accept="image/*" style="display:none">
       <button class="btn sm" data-action="rosterClear">清空</button>
     </div>
     <div class="card-body">
@@ -945,10 +951,12 @@ function renderStudents() {
           <input type="checkbox" id="rosterCreate" ${state.rosterCreate ? 'checked' : ''}> 名册外的姓名一并新增
         </label>
         <span class="hint" id="rosterSummary"></span>
+        <span class="hint" id="imgStatus"></span>
       </div>
     </div>
   </div>
   <div id="rosterPreviewHost"></div>
+  <div id="imgPreviewHost"></div>
 
   <div class="toolbar" style="margin-top:18px">
     <div class="search">
@@ -1031,6 +1039,98 @@ function doParseRoster() {
   const s = $('#rosterSummary');
   if (s) s.textContent = `识别 ${state.rosterPreview.length} 人，跳过 ${out.skipped.length} 行`;
   toast(`识别 ${state.rosterPreview.length} 人`, 'ok');
+}
+
+/* ---------- 图片识别分班表 ---------- */
+async function runImageOCR(file) {
+  const st = $('#imgStatus');
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = async () => {
+    try {
+      st.textContent = '正在识别…';
+      const res = await recognizeTableImage(img, state.students, (pr) => {
+        st.textContent = '正在识别… ' + Math.round(pr * 100) + '%';
+      });
+      URL.revokeObjectURL(url);
+      if (!res.ok) { st.textContent = res.error; toast(res.error, 'err'); return; }
+      if (!res.lines.length) {
+        st.textContent = '没认出任何学生，建议重新截图（要带完整表格边框）';
+        toast('没认出任何学生', 'err');
+        return;
+      }
+      state.imgPreview = res;
+      try { window.__imgRes = res; } catch {}
+      st.textContent = '认出 ' + res.lines.length + ' 人（自动纠错 ' + res.stats.fuzzy + ' 人），请在下面确认';
+      render();
+      toast('认出 ' + res.lines.length + ' 人', 'ok');
+    } catch (e) {
+      URL.revokeObjectURL(url);
+      st.textContent = '识别失败：' + e.message;
+      toast('识别失败：' + e.message, 'err');
+    }
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); st.textContent = '图片读不出来，换个截图试试'; };
+  img.src = url;
+}
+
+/* 编辑网格：识别结果逐行可改，改完一次性应用 */
+function renderImgPreview() {
+  const host = $('#imgPreviewHost');
+  if (!host) return;
+  const pv = state.imgPreview;
+  if (!pv) { host.innerHTML = ''; return; }
+  const groups = [...new Set(state.students.map((x) => x.group).filter(Boolean))].sort();
+  const classes = [...new Set(state.students.map((x) => x.className).filter(Boolean))].sort();
+  const opt = (list, cur) => list.map((g) => '<option ' + (g === cur ? 'selected' : '') + '>' + esc(g) + '</option>').join('');
+  const rows = pv.lines.map((l, i) =>
+    '<tr>' +
+    '<td class="col-check"><input type="checkbox" data-img-check="' + i + '" checked></td>' +
+    '<td><input type="text" data-img-field="name" data-img-i="' + i + '" value="' + esc(l.name) + '" list="imgNames" style="width:96px;height:28px"></td>' +
+    '<td><input type="text" data-img-field="dorm" data-img-i="' + i + '" value="" placeholder="宿舍（可选）" style="width:84px;height:28px"></td>' +
+    '<td><select data-img-field="group" data-img-i="' + i + '" style="height:28px;min-width:104px">' + opt(groups, l.group) + '</select></td>' +
+    '<td class="hide-sm"><select data-img-field="className" data-img-i="' + i + '" style="height:28px;min-width:96px">' + opt(classes, l.class) + '</select></td>' +
+    '<td>' + (l.how === 'fuzzy' ? '<span class="preview-tag pt-fuzzy">纠错</span>' : '<span class="hint">识别</span>') + '</td>' +
+    '<td><button class="icon-btn" data-action="imgDrop" data-img-i="' + i + '" title="移除">✕</button></td>' +
+    '</tr>'
+  ).join('');
+  host.innerHTML =
+    '<div class="card"><div class="card-head"><div><div class="card-title">图片识别结果（确认后写进名册）</div>' +
+    '<div class="card-sub">识别 ' + pv.lines.length + ' 人 · 自动纠错 ' + pv.stats.fuzzy + ' 人 · 每行都能改，改完点「应用到名册」</div></div>' +
+    '<span class="spacer"></span>' +
+    '<button class="btn" data-action="imgCancel">放弃</button>' +
+    '<button class="btn primary" data-action="imgApply">应用到名册</button></div>' +
+    '<datalist id="imgNames">' + state.students.map((x) => '<option value="' + esc(x.name) + '">').join('') + '</datalist>' +
+    '<div class="table-scroll"><table class="data"><thead><tr><th class="col-check"></th><th>姓名</th><th>宿舍</th><th>班组</th><th class="hide-sm">班级</th><th></th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+}
+
+async function applyImageLines() {
+  const pv = state.imgPreview;
+  if (!pv) return;
+  const lines = pv.lines.map((l, i) => {
+    const get = (f) => { const el = document.querySelector('[data-img-field="' + f + '"][data-img-i="' + i + '"]'); return el ? el.value : undefined; };
+    const chk = document.querySelector('[data-img-check="' + i + '"]');
+    return {
+      ...l,
+      name: get('name') !== undefined ? get('name').trim() : l.name,
+      dorm: (get('dorm') || '').trim(),
+      group: get('group') || l.group,
+      className: get('className') || l.class,
+      include: chk ? chk.checked : true,
+    };
+  });
+  const kept = lines.filter((l) => l.include && l.name && (l.group || l.className || l.dorm));
+  if (!kept.length) {
+    toast('没有要写入的行（填好姓名并勾选）', 'err');
+    return;
+  }
+  const students = kept.map((l) => ({ name: l.name, dorm: l.dorm || '', group: l.group || '', className: l.className || '', phone: '' }));
+  const data = await send('/api/students/bulk', 'POST', { students, create: true });
+  state.revision = data.revision;
+  state.students = data.students;
+  state.imgPreview = null;
+  render();
+  toast('名册已更新 ' + data.updated + ' 人，新增 ' + data.added + ' 人', 'ok');
 }
 
 async function applyRoster() {
@@ -1509,6 +1609,20 @@ document.addEventListener('click', async (e) => {
       case 'parseRoster':
         doParseRoster();
         break;
+      case 'imgPick':
+        $('#imgFile').click();
+        break;
+      case 'imgApply':
+        await applyImageLines();
+        break;
+      case 'imgCancel':
+        state.imgPreview = null;
+        render();
+        break;
+      case 'imgDrop':
+        state.imgPreview.lines.splice(Number(btn.dataset.imgI), 1);
+        render();
+        break;
       case 'applyRoster':
         await applyRoster();
         break;
@@ -1797,6 +1911,12 @@ document.addEventListener('change', (e) => {
 document.addEventListener('input', (e) => {
   if (e.target.id === 'pasteInput') {
     state.pasteText = e.target.value;
+    return;
+  }
+  if (e.target.id === 'imgFile') {
+    const file = e.target.files && e.target.files[0];
+    if (file) runImageOCR(file);
+    e.target.value = '';
     return;
   }
   if (e.target.id === 'rosterInput') {
