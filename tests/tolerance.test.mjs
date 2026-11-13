@@ -101,3 +101,17 @@ test('序号写法', () => {
   const { records } = parse('1）莫海妍 10月24日21:30至10月25日20:00\n2）苏甜 10月25日8:30至16:30');
   assert.equal(records.length, 2);
 });
+
+test('时段词当默认时刻：晚上放学后 → 21:00', () => {
+  const { records } = parse('请假学生：陈彦臻\n请假时间11月14日晚上放学后至11月14日晚上23:30前');
+  assert.equal(records[0].startAt, '2026-11-14T21:00');
+  assert.equal(records[0].endAt, '2026-11-14T23:30');
+  assert.ok(records[0].warnings.some((w) => w.includes('请核对')));
+});
+
+test('中午放学后 → 12:00；早上8点正常识别', () => {
+  const a = parse('请假学生：莫海妍\n11月14日中午放学后至11月14日晚上8点');
+  assert.equal(a.records[0].startAt, '2026-11-14T12:00');
+  const b = parse('请假学生：莫海妍\n11月14日早上8点至11月14日12点');
+  assert.equal(b.records[0].startAt, '2026-11-14T08:00');
+});
