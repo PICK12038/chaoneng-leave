@@ -355,6 +355,17 @@ export function parseTimeRange(line, ref) {
   }
 
   if (start.hh == null) {
+    // 「11月14日晚上放学后」这种没有具体钟点的开始：有日期+时段词时给默认时刻
+    if (first.hasDate && first.per) {
+      const defH = { 晚上: 21, 晚: 21, 夜里: 21, 夜: 21, 傍晚: 18, 下午: 17, 中午: 12, 上午: 8, 早上: 8, 早: 8, 凌晨: 0 }[first.per];
+      if (defH != null) {
+        start.hh = defH;
+        start.mi = 0;
+        warnings.push('开始时间只写了时段，按' + first.per + '默认 ' + defH + ' 点处理，请核对');
+      }
+    }
+  }
+  if (start.hh == null) {
     warnings.push('开始时间不完整');
   } else if (end) {
     const a = utc(start.y, start.m, start.d) + start.hh * 3600000 + start.mi * 60000;
