@@ -202,6 +202,20 @@
 
   const enc = encodeURIComponent;
 
+  /* 把 Supabase/PostgREST 的英文报错翻译成能直接看懂的中文 */
+  const friendlyError = (msg) => {
+    const m = String(msg || '');
+    if (/All object keys must match/i.test(m))
+      return '同一批记录里有字段缺失（例如有的写了结束时间、有的没写）。这通常是程序问题，请把这段文案反馈给管理员。';
+    if (/duplicate key|unique constraint/i.test(m)) return '这条记录已经存在（同一人同一时间重复导入）。';
+    if (/foreign key|violates foreign key/i.test(m)) return '这条记录关联的周次不存在，先刷新页面再试。';
+    if (/permission denied|row-level security|RLS/i.test(m)) return '云端权限不足，无法写入（可能是数据库规则设置问题）。';
+    if (/JWT|invalid api key|Invalid API key/i.test(m)) return '云端的访问密钥失效了，请检查 config.js 里的 key。';
+    if (/timeout|ETIMEDOUT|Failed to fetch/i.test(m)) return '网络连接不上云端，请检查网络后重试。';
+    if (/value too long/i.test(m)) return '有一项内容太长，请缩短后再试。';
+    return m;
+  };
+
   async function pg(path, { method = 'GET', body, prefer, headers } = {}) {
     const res = await fetch(REST + '/' + path, {
       method,
@@ -224,8 +238,8 @@
       }
     }
     if (!res.ok) {
-      const msg = (data && (data.message || data.hint || data.details)) || res.status + '';
-      throw new Error('云端拒绝了这次操作：' + msg);
+      const raw = (data && (data.message || data.hint || data.details)) || res.status + '';
+      throw new Error('云端拒绝了这次操作：' + friendlyError(raw));
     }
     return data;
   }
@@ -335,13 +349,18 @@
     return String(w).startsWith('=') ? w : globalCut || w || '21:30';
   };
 
+  /* 注意：所有字段必须「每行都存在」。PostgREST 批量插入时要求每行的键集合完全一致，
+     缺一个键就会整批报 `All object keys must match`。所以这里不做条件赋值，空值写 null。 */
   const toRecordRow = (r, weekId) => {
-    const row = {
+    const slip = r.slip || {};
+    return {
       week_id: weekId,
       name: r.name || '',
       raw_name: r.rawName || r.name || '',
       grp: r.group || '',
       dorm: r.dorm || '',
+      start_at: r.startAt ? fullTime(r.startAt) : null,
+      end_at: r.endAt ? fullTime(r.endAt) : null,
       time_raw: r.timeRaw || '',
       reason: r.reason || '',
       note: r.note || '',
@@ -349,16 +368,11 @@
       contact: r.contact || '',
       cat: r.category || catOfWeek(r.startAt, weekId, r.cutoff),
       check_state: r.check || '',
+      written: !!slip.written,
+      sent: !!slip.sent,
       by_name: r.by || '',
       updated_at: new Date().toISOString(),
     };
-    if (r.startAt) row.start_at = fullTime(r.startAt);
-    if (r.endAt) row.end_at = fullTime(r.endAt);
-    if (r.slip) {
-      row.written = !!r.slip.written;
-      row.sent = !!r.slip.sent;
-    }
-    return row;
   };
 
   /* 全局设置里的时间规则（settings.cutoff） */
