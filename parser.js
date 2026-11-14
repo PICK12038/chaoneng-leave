@@ -337,7 +337,26 @@ export function parseTimeRange(line, ref) {
     }
   }
 
-  const [first, second] = pairs[0];
+  // 多段区间时优先选「起止都完整」的那段：
+  // 「今天晚上6点半，黄颉焘与同学约好…请假时间11月14日18点30分至晚上23点」
+  // 第一段只有开始时间（叙述用），第二段才是真正的请假时段。
+  const pickPair = () => {
+    const complete = (pr) => {
+      if (!pr[1]) return false;
+      const a = pr[0];
+      const b = pr[1];
+      return (a.hasDate || a.hasTime) && b.hasTime !== false && (b.h != null || b.h === 0);
+    };
+    if (pairs.length <= 1) return pairs[0];
+    // 先找起止都完整的
+    for (let i = 0; i < pairs.length; i++) if (complete(pairs[i])) return pairs[Math.max(0, i)];
+    // 其次找「有日期」的那一段
+    for (const pr of pairs) if (pr[0] && pr[0].hasDate) return pr;
+    return pairs[0];
+  };
+  const chosen = pickPair();
+  const [first, second] = chosen;
+  const chosenIdx = pairs.indexOf(chosen);
   const startDate = resolveDate(first, ref);
   const start = { ...startDate, hh: applyPeriod(first.h, first.per), mi: first.mi == null ? 0 : first.mi };
 
@@ -379,7 +398,7 @@ export function parseTimeRange(line, ref) {
     }
   }
 
-  if (pairs.length > 1) warnings.push('识别到多段区间，已取第一段');
+  if (pairs.length > 1) warnings.push('文案里有多个时间，已取第 ' + (chosenIdx + 1) + ' 段作为请假时段，请核对');
 
   return {
     start: start.hh == null ? null : isoOf(start),
@@ -427,19 +446,31 @@ export function levenshtein(a, b) {
 
 /* 姓名标签：中英文都认。名字中间可以有空格（不跨行），标签和名字之间可隔一个换行。
    冒号必填（半角/全角/分号都行）；方括号或「标签独占一行」时可不写冒号。 */
+/* 中文名 2~6 个汉字（允许中间空格）；英文名放宽。用于标签后面的姓名捕获 */
+const ST_NAME = '([\\u4e00-\\u9fa5·][\\u4e00-\\u9fa5· \\t]{0,5}|[A-Za-z][A-Za-z ]{1,18})';
 const NAME_CH = '([\\u4e00-\\u9fa5·][\\u4e00-\\u9fa5· \\t]{0,10}|[A-Za-z][A-Za-z \\t]{1,18})';
 const STUDENT_LABELS = '请假学生|学生姓名|学生名字|姓名|名字|Student Name|Student|Name';
 const PARENT_LABELS = '学生家长|家长姓名|家长|监护人|Parent';
-const LABEL_GAP = '[ \\t]*[:：;；][ \\t]*\\n?[ \\t]*';
+/* 分隔符：冒号/分号/逗号/顿号都算（家长常写「请假学生，某某」） */
+const LABEL_GAP = '[ \\t]*[:：;；,，、][ \\t]*\\n?[ \\t]*';
+/* 家长标签后面跟逗号时容易吞掉后半句（「我是X的家长，苏甜因为…」），只认冒号/分号/顿号 */
+const LABEL_GAP_STRICT = '[ \\t]*[:：;；、][ \\t]*\\n?[ \\t]*';
 
 const LABEL_STUDENT = new RegExp(
-  '(?:' + STUDENT_LABELS + ')' + LABEL_GAP + NAME_CH +
-    '|【[ \\t]*(?:' + STUDENT_LABELS + ')[ \\t]*】[ \\t]*[:：;；]?[ \\t]*' + NAME_CH +
-    '|^[ \\t]*(?:请假学生|学生姓名|姓名)[ \\t]*\\n[ \\t]*' + NAME_CH,
+  '(?:' + STUDENT_LABELS + ')' + LABEL_GAP + ST_NAME +
+    '|【[ \\t]*(?:' + STUDENT_LABELS + ')[ \\t]*】[ \\t]*[:：;；]?[ \\t]*' + ST_NAME +
+    '|^[ \\t]*(?:请假学生|学生姓名|姓名)[ \\t]*\\n[ \\t]*' + ST_NAME,
   'im'
 );
 
-const LABEL_PARENT = new RegExp('(?:' + PARENT_LABELS + ')' + LABEL_GAP + NAME_CH, 'i');
+const LABEL_PARENT = new RegExp('(?:' + PARENT_LABELS + ')' + LABEL_GAP_STRICT + ST_NAME, 'i');
+/* 逗号版家长标签：仅当逗号后的名字独立成词（后接标点、换行、结尾或下一个标签）才算 */
+const LABEL_PARENT_COMMA = new RegExp(
+  '(?:' + PARENT_LABELS + ')[ \\t]*[,，][ \\t]*' +
+    ST_NAME +
+    '(?=[ \\t]*[，,。;；、\\n]|[ \\t]*$|[ \\t]*(?:联系电话|电话|手机|签字|请假学生|备注))',
+  'i'
+);
 
 const LABEL_PHONE = /(?:家长联系电话|联系电话|家长电话|电话|手机|手机号|Phone|Tel)\s*[:：]?\s*(\d{6,12})/i;
 // 「我是某某学生的家长」「我是某某」——自我介绍里的名字不算请假学生
@@ -471,7 +502,7 @@ export function extractHints(text) {
   };
   // 三个分支各自一个捕获组：普通标签 / 方括号 / 标签独占一行
   const student = sm ? cleanName(sm[1] || sm[2] || sm[3] || '') : '';
-  const pm = last(LABEL_PARENT);
+  const pm = last(LABEL_PARENT) || last(LABEL_PARENT_COMMA);
   let parent = pm ? cleanName(pm[1]) : '';
   if (parent && parent === student) parent = '';
   const ph = last(LABEL_PHONE);
