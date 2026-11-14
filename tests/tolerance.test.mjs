@@ -115,3 +115,19 @@ test('中午放学后 → 12:00；早上8点正常识别', () => {
   const b = parse('请假学生：莫海妍\n11月14日早上8点至11月14日12点');
   assert.equal(b.records[0].startAt, '2026-11-14T08:00');
 });
+test("多段时间：叙述性时间在前时，取完整的请假时段", () => {
+  const { records } = parse(
+    "我是超能2班黄颉焘的家长，今天晚上6点半，黄颉焘与同学约好有事外出，需请假，请假时间11月14日晚上18点30分至晚上23点，外出期间一切安全问题自行负责，请假学生，黄颉焘，学生家长，黄忠全，联系电话18926443349"
+  );
+  assert.equal(records.length, 1);
+  assert.equal(records[0].name, "黄颉焘");
+  assert.equal(records[0].startAt, "2026-11-14T18:30");
+  assert.equal(records[0].endAt, "2026-11-14T23:00");
+  assert.equal(records[0].contact, "黄忠全");
+  assert.ok(records[0].warnings.some((w) => w.includes("第 2 段")));
+});
+
+test("逗号标签：请假学生，某某 也能认", () => {
+  const { records } = parse("请假学生，苏甜，请假时间10月25日9时至18时");
+  assert.equal(records[0].name, "苏甜");
+});
