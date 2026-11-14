@@ -212,8 +212,8 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .hb-prog .bar { width: 74px; height: 5px; border-radius: 99px; background: rgba(255,255,255,.14); overflow: hidden; }
 .hb-prog .bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #8b7cff, #67e8b0); transition: width .4s ease; }
 .hb-prog .ck-dot { width: 7px; height: 7px; border-radius: 99px; display: inline-block; }
-.hb-prog .ck-dot.paper { background: #fbbf24; }
-.hb-prog .ck-dot.left { background: #60a5fa; }
+.hb-prog .ck-dot.ok { background: #22c55e; }
+
 .hb-prog .ck-rest { color: rgba(255,255,255,.5); }
 .hb-pl { font-family: var(--mono); }
 
@@ -313,16 +313,18 @@ td.col-mini, th.col-mini { width: 96px; white-space: nowrap; }
   width: 22px; height: 22px; border-radius: 50%; padding: 0; cursor: pointer;
   border: 1.5px dashed #d5d8e2; background: #fff; transition: .13s;
   display: inline-grid; place-items: center;
+  font-size: 12px; font-weight: 700; color: #16a34a; line-height: 1;
 }
 .mini-chk:hover { border-color: #b9bec9; }
-.mini-chk.paper { border: 1.5px solid #f59e0b; background: #fef3c7; }
-.mini-chk.paper::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #d97706; }
-.mini-chk.left { border: 1.5px solid #3b82f6; background: #dbeafe; }
-.mini-chk.left::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #2563eb; }
-tr.row.chk-paper td:first-child { box-shadow: inset 3px 0 0 #f59e0b; }
-tr.row.chk-left td:first-child { box-shadow: inset 3px 0 0 #3b82f6; }
-.bulkbar .chkbtn.paper { background: #fef3c7; border-color: #f59e0b; color: #92400e; }
-.bulkbar .chkbtn.left { background: #dbeafe; border-color: #3b82f6; color: #1d4ed8; }
+.mini-chk.ok { border: 1.5px solid #22c55e; background: #dcfce7; }
+
+/* 已核对：姓名列整格绿底，一眼看出哪些已经核对过 */
+td.name-checked { background: #dcfce7 !important; }
+td.name-checked .pname { color: #15803d; }
+td.name-checked .pnote { color: #4d7c5f; }
+tr.row.chk-ok td:first-child { box-shadow: inset 3px 0 0 #22c55e; }
+tr.row.chk-ok:hover td.name-checked { background: #d1fae5 !important; }
+.bulkbar .chkbtn.ok { background: #dcfce7 !important; border-color: #22c55e !important; color: #15803d !important; font-weight: 650; }
 tr.group-row td {
   background: #f8f9fc; border-bottom: 1px solid var(--line);
   font-size: 12px; font-weight: 650; color: var(--ink-2); padding: 5px 10px;
