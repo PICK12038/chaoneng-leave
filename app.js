@@ -443,10 +443,9 @@ function renderWeekShell() {
   const groups = new Set(w.records.map((r) => r.group).filter(Boolean)).size;
   const sent = w.records.filter((r) => r.slip && r.slip.sent).length;
   const written = w.records.filter((r) => r.slip && r.slip.written).length;
-  const paper = w.records.filter((r) => r.check === 'paper').length;
-  const left = w.records.filter((r) => r.check === 'left').length;
+  const done = w.records.filter((r) => normCheck(r.check)).length;
   const pct = total ? Math.round((sent / total) * 100) : 0;
-  const pctChecked = total ? Math.round(((paper + left) / total) * 100) : 0;
+  const pctChecked = total ? Math.round((done / total) * 100) : 0;
 
   const isThisWeek = w.saturday === thisSaturdayIso();
   const wkNo = termWeekNo(w.saturday);
@@ -471,12 +470,12 @@ function renderWeekShell() {
         <button class="hs sat ${state.filter === 'sat' ? 'on' : ''}" data-action="filter" data-filter="sat" title="周六"><b>${counts.sat}</b><span>周六</span></button>
         <button class="hs sun ${state.filter === 'sun' ? 'on' : ''}" data-action="filter" data-filter="sun" title="周日"><b>${counts.sun}</b><span>周日</span></button>
       </div>
-      <div class="hb-prog" title="假条已发 ${sent} / ${total || 0}，已写 ${written}；核对：有实物 ${paper}、已走 ${left}、未核对 ${Math.max(0, total - paper - left)}">
+      <div class="hb-prog" title="假条已发 ${sent} / ${total || 0}，已写 ${written}；已核对 ${done}、未核对 ${Math.max(0, total - done)}">
         <span class="hb-pl">假条 ${sent}/${total || 0}</span>
         <div class="bar"><i style="width:${pct}%"></i></div>
-        <span class="ck-dot paper"></span>${paper}
-        <span class="ck-dot left"></span>${left}
-        <span class="ck-rest">未核 ${Math.max(0, total - paper - left)}</span>
+        <span class="ck-dot ok"></span>${done}
+
+        <span class="ck-rest">未核 ${Math.max(0, total - done)}</span>
       </div>
     </div>
   </section>
@@ -531,18 +530,20 @@ function avatarClass(name) {
   return ['', 'a', 'b', 'c', 'd'][h];
 }
 
-const CHECK_ORDER = ['', 'paper', 'left'];
-const CHECK_LABEL = { '': '未核对', paper: '有实物', left: '已走' };
+const CHECK_ORDER = ['', 'ok'];
+const CHECK_LABEL = { '': '未核对', ok: '已核对', paper: '已核对', left: '已核对' };
+/* 历史数据兼容：paper / left 一律视为「已核对」 */
+const normCheck = (v) => (v === 'paper' || v === 'left' ? 'ok' : v === 'ok' ? 'ok' : '');
 
 function rowHtml(r) {
   const sel = state.selected.has(r.id);
   const slip = r.slip || {};
   const missing = !state.students.some((s) => s.name === r.name);
-  const chk = r.check || '';
-  const chkTip = `核对：${CHECK_LABEL[chk]}（点一下切换 有实物→已走→取消）`;
-  return `<tr class="row chk-${chk || 'none'}" data-action="openRecord" data-id="${r.id}">
+  const chk = normCheck(r.check || '');
+  const chkTip = chk ? '已核对（点一下取消）' : '点击标记为已核对';
+  return `<tr class="row chk-${chk ? 'ok' : 'none'}" data-action="openRecord" data-id="${r.id}">
     <td class="col-check"><input type="checkbox" data-check="${r.id}" ${sel ? 'checked' : ''}></td>
-    <td>
+    <td class="${chk ? 'name-checked' : ''}">
       <div class="person">
         <span class="pav ${avatarClass(r.name)}">${esc((r.name || '?').slice(0, 1))}</span>
         <div style="min-width:0">
@@ -559,7 +560,7 @@ function rowHtml(r) {
       <div class="mini-acts">
         <button class="mini ${slip.written ? 'on' : ''}" data-action="slip" data-id="${r.id}" data-field="written" title="假条已写（${slip.written ? '已写' : '未写'}，点一下切换）" aria-label="假条已写">${slip.written ? '✎' : '·'}</button>
         <button class="mini ${slip.sent ? 'on sent' : ''}" data-action="slip" data-id="${r.id}" data-field="sent" title="假条已发（${slip.sent ? '已发' : '未发'}，点一下切换）" aria-label="假条已发">${slip.sent ? '✓' : '·'}</button>
-        <button class="mini-chk ${chk || 'none'}" data-action="chk" data-id="${r.id}" title="${chkTip}" aria-label="${chkTip}"></button>
+        <button class="mini-chk ${chk ? 'ok' : 'none'}" data-action="chk" data-id="${r.id}" title="${chkTip}" aria-label="${chkTip}">${chk ? '✓' : ''}</button>
       </div>
     </td>
   </tr>`;
@@ -586,10 +587,9 @@ function paintWeekStats() {
   if (!w) return;
   const total = w.records.length;
   const sent = w.records.filter((r) => r.slip && r.slip.sent).length;
-  const paper = w.records.filter((r) => r.check === 'paper').length;
-  const left = w.records.filter((r) => r.check === 'left').length;
+  const done = w.records.filter((r) => normCheck(r.check)).length;
   const pct = total ? Math.round((sent / total) * 100) : 0;
-  // 顶部窄条里的 假条 x/y 与 有实物/已走/未核 数字
+  // 顶部窄条里的 假条 x/y 与 已核对/未核 数字
   const prog = document.querySelector('.hb-prog');
   if (prog) {
     const pl = prog.querySelector('.hb-pl');
@@ -597,7 +597,7 @@ function paintWeekStats() {
     const bar = prog.querySelector('.bar i');
     if (bar) bar.style.width = pct + '%';
     const rest = prog.querySelector('.ck-rest');
-    if (rest) rest.textContent = `未核 ${Math.max(0, total - paper - left)}`;
+    if (rest) rest.textContent = `未核 ${Math.max(0, total - done)}`;
   }
   // 侧栏「本周名单」的条数
   const navCount = document.querySelector('.nav-count');
@@ -656,9 +656,8 @@ function renderBulk() {
     <button class="btn" data-action="bulkSlip" data-field="written" data-value="1">标记已写</button>
     <button class="btn" data-action="bulkSlip" data-field="sent" data-value="1">标记已发</button>
     <button class="btn" data-action="bulkSlip" data-field="sent" data-value="0">取消已发</button>
-    <button class="btn chkbtn paper" data-action="bulkCheck" data-value="paper">核对：有实物</button>
-    <button class="btn chkbtn left" data-action="bulkCheck" data-value="left">核对：已走</button>
-    <button class="btn" data-action="bulkCheck" data-value="">清除核对</button>
+    <button class="btn chkbtn ok" data-action="bulkCheck" data-value="ok">✓ 批量核对</button>
+    <button class="btn" data-action="bulkCheck" data-value="">取消核对</button>
     <button class="btn danger" data-action="bulkDelete">删除</button>
     <button class="btn" data-action="clearSel">取消选择</button>
   </div>`;
@@ -2123,8 +2122,8 @@ async function toggleSlip(rid, field) {
 async function cycleCheck(rid) {
   const rec = state.week.records.find((r) => r.id === rid);
   if (!rec) return;
-  const cur = CHECK_ORDER.indexOf(rec.check || '');
-  const next = CHECK_ORDER[(cur + 1) % CHECK_ORDER.length];
+  const cur = normCheck(rec.check || '');
+  const next = cur === 'ok' ? '' : 'ok';
   const data = await send(`/api/records/${encodeURIComponent(state.week.id)}/${encodeURIComponent(rid)}`, 'PATCH', { check: next });
   state.revision = data.revision;
   state.week = data.week;
