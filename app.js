@@ -361,6 +361,27 @@ function recordKey(r) {
 }
 
 /** 班组排序：超能一1组 → 超能一2组 → … → 超能三4组 → 丰泰班1组 */
+/* 从班组名推班级：超能二3组 → 超能2班；丰泰班2组 → 丰泰班 */
+function classOfGroup(g) {
+  const t = String(g || '');
+  if (/丰泰/.test(t)) return '丰泰班';
+  const m = /超能\s*([一二三四1234])/.exec(t);
+  if (m) {
+    const n = { 一: '1', 二: '2', 三: '3', 四: '4' }[m[1]] || m[1];
+    return `超能${n}班`;
+  }
+  return '';
+}
+
+/* 班级排序权重：超能1班 < 超能2班 < 超能3班 < 丰泰班 < 未分类 */
+function classRank(cls) {
+  const t = String(cls || '');
+  const m = /超能\s*([1234])/.exec(t);
+  if (m) return [0, +m[1]];
+  if (/丰泰/.test(t)) return [1, 0];
+  return [2, 0];
+}
+
 function groupRank(g) {
   const s = String(g || '');
   const m = /超能\s*([一二三四])?\s*(\d)\s*组/.exec(s);
@@ -378,6 +399,14 @@ function cmpGroup(a, b) {
 
 function sortedRecords() {
   return [...(state.week ? state.week.records : [])].sort((a, b) => {
+    if (state.sortBy === 'class') {
+      const A = classRank(classOfGroup(a.group));
+      const B = classRank(classOfGroup(b.group));
+      const c = A[0] - B[0] || A[1] - B[1];
+      if (c) return c;
+      const g = cmpGroup(a.group, b.group);
+      if (g) return g;
+    }
     if (state.sortBy === 'group') {
       const g = cmpGroup(a.group, b.group);
       if (g) return g;
@@ -466,6 +495,7 @@ function renderWeekShell() {
     </div>
     <span class="spacer"></span>
     <div class="segment">
+      ${seg('class', '按班级')}
       ${seg('group', '按班组')}
       ${seg('time', '按时间')}
       ${seg('dorm', '按宿舍')}
@@ -535,6 +565,45 @@ function rowHtml(r) {
   </tr>`;
 }
 
+/* 只重绘表格区域（保留滚动位置）：点核对 / 假条后用这个，不要用 render() */
+function repaintTable() {
+  const host = $('#tableHost');
+  if (!host) return;
+  // 记住当前滚动位置
+  const scroller = host.closest('.table-scroll');
+  const top = scroller ? scroller.scrollTop : 0;
+  // 记住这一行的 id，重绘后尽量回到同一位置（行数可能变）
+  const anchorId = (document.querySelector('#tableHost tbody tr.row.chk-paper') || {}).dataset;
+  renderWeekTable();
+  if (scroller) scroller.scrollTop = top;
+  // 表头统计也要同步（假条/核对进度在顶部窄条上）
+  paintWeekStats();
+}
+
+/* 只更新顶部窄条里的统计与进度，不动整页 */
+function paintWeekStats() {
+  const w = state.week;
+  if (!w) return;
+  const total = w.records.length;
+  const sent = w.records.filter((r) => r.slip && r.slip.sent).length;
+  const paper = w.records.filter((r) => r.check === 'paper').length;
+  const left = w.records.filter((r) => r.check === 'left').length;
+  const pct = total ? Math.round((sent / total) * 100) : 0;
+  // 顶部窄条里的 假条 x/y 与 有实物/已走/未核 数字
+  const prog = document.querySelector('.hb-prog');
+  if (prog) {
+    const pl = prog.querySelector('.hb-pl');
+    if (pl) pl.textContent = `假条 ${sent}/${total}`;
+    const bar = prog.querySelector('.bar i');
+    if (bar) bar.style.width = pct + '%';
+    const rest = prog.querySelector('.ck-rest');
+    if (rest) rest.textContent = `未核 ${Math.max(0, total - paper - left)}`;
+  }
+  // 侧栏「本周名单」的条数
+  const navCount = document.querySelector('.nav-count');
+  if (navCount) navCount.textContent = total;
+}
+
 function renderWeekTable() {
   const host = $('#tableHost');
   if (!host) return;
@@ -548,12 +617,14 @@ function renderWeekTable() {
 
   let rows = '';
   let lastGroup = null;
-  if (state.sortBy === 'group') {
+  if (state.sortBy === 'group' || state.sortBy === 'class') {
     for (const r of list) {
       const g = r.group || '未分组';
       if (g !== lastGroup) {
         const n = list.filter((x) => (x.group || '未分组') === g).length;
-        rows += `<tr class="group-row"><td colspan="6">${esc(g)}<span class="gcount">${n} 人</span></td></tr>`;
+        const cls = classOfGroup(g);
+        const clsTag = cls ? `<span class="gclass">${esc(cls)}</span>` : '';
+        rows += `<tr class="group-row"><td colspan="6">${clsTag}${esc(g)}<span class="gcount">${n} 人</span></td></tr>`;
         lastGroup = g;
       }
       rows += rowHtml(r);
@@ -2045,8 +2116,8 @@ async function toggleSlip(rid, field) {
   });
   state.revision = data.revision;
   state.week = data.week;
-  renderShell();
-  render();
+  // 只重绘表格，保留滚动位置（以前这里 render() 会跳回顶部）
+  repaintTable();
 }
 
 async function cycleCheck(rid) {
@@ -2058,8 +2129,8 @@ async function cycleCheck(rid) {
   state.revision = data.revision;
   state.week = data.week;
   toast(`${rec.name} → ${CHECK_LABEL[next]}`, 'ok');
-  renderShell();
-  render();
+  // 只重绘表格，保留滚动位置
+  repaintTable();
 }
 
 async function bulkCheck(value) {
