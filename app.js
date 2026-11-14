@@ -2226,50 +2226,91 @@ async function deleteStudent(name) {
 }
 
 /* 给「这一周」单独设时间规则（调休周：周六照常放假但周日提前收工） */
+/* 这周的时间规则：可以选「应用到哪一周」，默认本周 */
 function openWeekRule() {
   const w = state.week;
   if (!w) return;
-  const own = isWeekOverride(w.cutoff);
+  const thisSat = thisSaturdayIso();
+  // 默认落在本周；如果本周还不在列表里，先补一个虚拟条目
+  const weeks = [...(state.weeks || [])];
+  if (!weeks.some((x) => x.saturday === thisSat)) {
+    weeks.push({ id: thisSat, saturday: thisSat, cutoff: state.settings.cutoff, total: 0, override: false });
+  }
+  weeks.sort((a, b) => String(b.saturday).localeCompare(String(a.saturday)));
+  // 默认落在「本周」；本周还没建也能直接建（后端会自动建周次）
+  const curSat = thisSat;
+  const options = weeks
+    .map((x) => {
+      const isThis = x.saturday === thisSat;
+      const tag = isThis ? ' · 本周' : '';
+      const ownMark = String(x.cutoff || '').startsWith('=') ? '（已单独设）' : '';
+      return `<option value="${esc(x.saturday)}" ${x.saturday === curSat ? 'selected' : ''}>${esc(md(x.saturday))} ${esc(wd(x.saturday))}${tag}${ownMark}</option>`;
+    })
+    .join('');
+
   const cur = decodeCutoff(w.cutoff);
   const g = decodeCutoff(state.settings.cutoff);
-  const note = own ? '本周用了自己的规则' : '本周跟随全局设置';
+  const own = isWeekOverride(w.cutoff);
+
   const body = [
-    `<div class="tip"><span>📅</span><div><b>${esc(md(w.saturday))} ${esc(wd(w.saturday))}</b> 这一周 · ${esc(note)}<br>
-      调休、考试周、临时提前收假都可以在这里单独调，不影响其它周次。</div></div>`,
+    `<div class="tip"><span>📅</span><div>调休、考试周、临时提前收假都可以单独调，<b>只影响你选中的那一周</b>，其它周次照旧。</div></div>`,
+    `<div class="field"><label>应用到哪一周<span class="sub">默认是本周</span></label>`,
+    `<select id="wrWeek" style="width:100%">${options}</select></div>`,
     `<div class="field"><label>提前请假截止<span class="sub">周六这个时间之前走 = 提前请假</span></label>`,
     `<input type="time" id="wrCutoff" value="${esc(cur.cutoff)}"></div>`,
     `<div class="field"><label>周日从几点开始算<span class="sub">之前仍算周六</span></label>`,
     `<input type="time" id="wrSunStart" value="${esc(cur.sunStart)}"></div>`,
     `<div class="field"><label>周日到几点算结束<span class="sub">之后算「其他」</span></label>`,
     `<input type="time" id="wrSunEnd" value="${esc(cur.sunEnd)}"></div>`,
-    `<div class="hint">全局设置：提前截止 ${esc(g.cutoff)} · 周日 ${esc(g.sunStart)} 起 · ${esc(g.sunEnd)} 止</div>`,
+    `<div class="hint" id="wrStatus">${own ? '这一周已经单独设过规则' : '这一周跟随全局设置'}</div>`,
   ].join('');
 
   openModal({
-    title: "这一周的时间规则",
+    title: '时间规则',
     body,
     foot: [
       `<button class="btn ghost" data-action="closeModal">取消</button>`,
-      own ? `<button class="btn" data-action="weekRuleReset">恢复跟随全局</button>` : '',
+      `<button class="btn" data-action="weekRuleReset">恢复跟随全局</button>`,
       `<span class="spacer"></span>`,
-      `<button class="btn primary" data-action="weekRuleSave">保存到本周</button>`,
+      `<button class="btn primary" data-action="weekRuleSave">保存到所选周</button>`,
     ].join(''),
+    onMount: () => {
+      const sel = $('#wrWeek');
+      if (!sel) return;
+      // 切换目标周时，把那一周的现有规则填进来，避免误存别人的设置
+      sel.addEventListener('change', () => {
+        const sat = sel.value;
+        const item = weeks.find((x) => x.saturday === sat) || {};
+        const c = decodeCutoff(item.cutoff || state.settings.cutoff);
+        $('#wrCutoff').value = c.cutoff;
+        $('#wrSunStart').value = c.sunStart;
+        $('#wrSunEnd').value = c.sunEnd;
+        const st = $('#wrStatus');
+        if (st) {
+          const isOwn = isWeekOverride(item.cutoff);
+          st.textContent = isOwn ? '这一周已经单独设过规则' : '这一周跟随全局设置';
+        }
+      });
+    },
   });
 }
 
 async function saveWeekRule(clear) {
-  const id = state.week && state.week.saturday;
+  const picked = (document.querySelector('#wrWeek') || {}).value;
+  const id = picked || (state.week && state.week.saturday);
   if (!id) return;
   const payload = clear
     ? { cutoff: '' }
     : { cutoff: encodeCutoff($('#wrCutoff').value, $('#wrSunStart').value, $('#wrSunEnd').value) };
   const data = await send(`/api/week-rule/${encodeURIComponent(id)}`, 'PUT', payload);
   state.revision = data.revision;
-  state.week = data.week;
   if (data.weeks) state.weeks = data.weeks;
+  const viewingSame = state.week && state.week.saturday === id;
+  if (viewingSame && data.week) state.week = data.week;
   closeModal();
-  render();
-  toast(clear ? '本周已恢复跟随全局设置' : '本周规则已保存，分类已重算', 'ok');
+  if (viewingSame) render();
+  else if (state.view === 'settings') render();
+  toast(clear ? `${md(id)} 已恢复跟随全局设置` : `${md(id)} 规则已保存，分类已重算`, 'ok');
 }
 
 async function saveSettings() {
